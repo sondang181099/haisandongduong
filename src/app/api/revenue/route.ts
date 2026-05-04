@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import { Transaction } from "@/models/Transaction";
+import { Role } from "@/models/Role";
+import { User } from "@/models/User";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+import timezone from "dayjs/plugin/timezone";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 function escapeRegExp(string: string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -22,18 +30,23 @@ export async function GET(request: Request) {
     const paidDateFrom = searchParams.get("paidDateFrom") || searchParams.get("paymentDateFrom");
     const paidDateTo = searchParams.get("paidDateTo") || searchParams.get("paymentDateTo");
     const arrivalDate = searchParams.get("arrivalDate");
+    const paidDateAt = searchParams.get("paidDateAt");
     const search = searchParams.get("search");
     const showInternal = searchParams.get("showInternal") === "true";
+    // Chế độ bảng trình chiếu: chỉ hiển thị xe đoàn (có số chỗ/Taxi)
+    const presentationMode = searchParams.get("presentationMode") === "true";
+
+    // Danh sách nhóm xe đoàn (lái xe đoàn) - dùng cho bảng trình chiếu
+    const TOUR_VEHICLE_GROUPS = ["4 chỗ", "7 chỗ", "16 chỗ", "29 chỗ", "35 chỗ", "45 chỗ", "Taxi"];
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const userRole = (session.user as any)?.role || "Sale";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const userFullname = (session.user as any)?.fullname || "";
+    const isDriverRole = (session.user as any)?.isDriverRole === true;
+    const userCars: Array<{ licensePlate?: string; [key: string]: any } | string> = (session.user as any)?.cars || [];
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const query: Record<string, any> = {
-      code: { $ne: "Khách lẻ" } // Ẩn đơn khách lẻ khỏi giao diện chính
-    };
+    const query: Record<string, any> = {};
 
     if (licensePlate || (search && search.length >= 4)) {
       const rawSearch = licensePlate || search;
@@ -45,46 +58,164 @@ export async function GET(request: Request) {
         { vehicleNumber: { $regex: searchValue, $options: "i" } }
       ];
     }
-    if (groups) {
+    // Danh sách các nhóm cần ẩn khi không "Hiển thị tất cả" (Sử dụng Blacklist để linh hoạt hơn)
+    const INTERNAL_GROUPS = ["Khách lẻ", "Nội bộ", "Khách lẻ."];
+
+    if (presentationMode) {
+      // Chế độ trình chiếu: chỉ lấy xe đoàn, bỏ qua xe nội bộ/khách lẻ và bỏ qua các bản ghi đã xóa
+      query.groups = { $nin: INTERNAL_GROUPS };
+      query.isCustomerDeleted = { $ne: true };
+    } else if (groups) {
       const types = groups.split(",");
       query.groups = { $in: types };
     } else if (!showInternal) {
-      // Mặc định lọc bỏ xe nội bộ nếu không chọn cụ thể nhóm nào và không bật "Hiển thị xe nội bộ"
-      query.groups = { $not: { $regex: "Nội bộ", $options: "i" } };
+      if (query.$or) {
+        // Nếu đã có $or từ tìm kiếm biển số, kết hợp với điều kiện ẩn Khách lẻ/Nội bộ
+        const existingOr = query.$or;
+        delete query.$or;
+        query.$and = [
+          { $or: existingOr },
+          { groups: { $nin: INTERNAL_GROUPS } }
+        ];
+      } else {
+        query.groups = { $nin: INTERNAL_GROUPS };
+      }
     }
-    const isFullAccess = userRole === "admin" || userRole === "root" || userRole === "manager";
-    const viewUnpaid = (session.user as any).viewUnpaid === true;
 
-    if (isFullAccess) {
+    await connectDB();
+
+    // Lấy quyền trực tiếp từ database để có hiệu lực ngay lập tức
+    const roleData = await Role.findOne({ key: userRole });
+    const viewUnpaid = roleData ? !!roleData.viewUnpaid : false;
+    const viewPaid = roleData ? !!roleData.viewPaid : false;
+    const canDeleteLocal = roleData ? !!roleData.canDeleteLocal : false;
+    // Ưu tiên isDriverRole từ DB (mới nhất), fallback về session token
+    const driverRoleFromDB = roleData ? !!roleData.isDriverRole : false;
+    const effectiveIsDriverRole = driverRoleFromDB || isDriverRole;
+
+    const isFullAccess = userRole === "admin" || userRole === "root" || userRole === "manager";
+
+    // === LỌC THEO XE CỦA TÀI XẾ ===
+    // Nếu là role tài xế, chỉ cho xem dữ liệu các xe thuộc danh sách của họ
+    if (effectiveIsDriverRole && !isFullAccess) {
+      // Lấy danh sách xe mới nhất từ DB thay vì session để không bị chậm trễ
+      const userId = (session.user as any)?.id;
+      let freshUserCars = userCars;
+      if (userId) {
+        const freshUser = await User.findById(userId).select("cars");
+        if (freshUser) {
+          freshUserCars = freshUser.cars || [];
+        }
+      }
+
+      // Trích xuất danh sách biển số từ cars (có thể là string hoặc object)
+      const driverLicensePlates: string[] = freshUserCars
+        .map((car: any) => {
+          if (typeof car === "string") return car;
+          return (car as any)?.licensePlate || "";
+        })
+        .filter(Boolean);
+
+      if (driverLicensePlates.length === 0) {
+        // Không có xe nào → không trả dữ liệu
+        return NextResponse.json({ transactions: [], totals: { totalRevenue: 0, totalExtraFee: 0, totalProfit: 0, totalCash: 0, totalTransfer: 0 } });
+      }
+
+      // Xây dựng điều kiện lọc theo biển số
+      const vehicleConditions = driverLicensePlates.map((plate) => [
+        { vehicleNumber: { $regex: `^${plate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } },
+        { licensePlate: { $regex: `^${plate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } },
+      ]).flat();
+
+      // Kết hợp với điều kiện đang có trong query
+      if (query.$and) {
+        query.$and.push({ $or: vehicleConditions });
+      } else if (query.$or) {
+        const existingOr = query.$or;
+        delete query.$or;
+        query.$and = [{ $or: existingOr }, { $or: vehicleConditions }];
+      } else {
+        query.$or = vehicleConditions;
+      }
+    }
+
+    // Chỉ ẩn các bản ghi bị xóa cục bộ khi ở chế độ trình chiếu
+    if (presentationMode) {
+      query.isHidden = { $ne: true };
+    }
+
+    // Phân quyền xem đơn hàng theo trạng thái
+    if (presentationMode) {
+      // Chế độ trình chiếu: Mặc định hiển thị theo tham số status hoặc tất cả nếu không có
       if (status !== null && status !== undefined && status !== "") {
         query.status = Number(status);
       }
-    } else if (viewUnpaid) {
-      // Nhóm được phép xem đơn chưa thanh toán
-      query.status = 0;
     } else {
-      // Còn lại: CHỈ xem được đơn ĐÃ THANH TOÁN
-      query.status = 1;
-      if (userFullname) {
-        query.sellerName = { $regex: escapeRegExp(userFullname), $options: "i" };
+      // Logic phân quyền mới: Tôn trọng tuyệt đối viewUnpaid và viewPaid
+      const allowedStatuses = [];
+      // Tài xế: Nếu admin có tick cụ thể, tôn trọng tick. Nếu không tick gì cả (cấu hình cũ), cho phép xem tất cả.
+      const driverViewAll = effectiveIsDriverRole && !viewUnpaid && !viewPaid;
+      if (viewUnpaid || driverViewAll) allowedStatuses.push(0);
+      if (viewPaid || driverViewAll) allowedStatuses.push(1);
+
+      // Nếu người dùng chọn filter cụ thể trên giao diện
+      if (status !== null && status !== undefined && status !== "") {
+        const requestedStatus = Number(status);
+        // Kiểm tra xem status yêu cầu có nằm trong quyền được xem không
+        if (isFullAccess || allowedStatuses.includes(requestedStatus)) {
+          query.status = requestedStatus;
+        } else {
+          // Nếu không có quyền xem status đó, ép về rỗng để không ra kết quả hoặc ép về status được phép
+          query.status = -1; // Không khớp với bất kỳ đơn nào
+        }
+      } else {
+        // Nếu không chọn filter trên giao diện, hiển thị theo quyền
+        if (isFullAccess && !viewUnpaid && !viewPaid && !effectiveIsDriverRole) {
+          // Trường hợp Admin chưa được cấu hình quyền cụ thể (mặc định cho xem hết)
+          // query.status không set = xem tất cả
+        } else if (allowedStatuses.length === 1) {
+          query.status = allowedStatuses[0];
+        } else if (allowedStatuses.length === 2) {
+          query.status = { $in: [0, 1] };
+        } else if (!isFullAccess && !effectiveIsDriverRole) {
+          // Người dùng thường không có quyền xem loại nào cả
+          query.status = -1;
+        }
+      }
+
+      // Hạn chế xem theo sellerName nếu không phải FullAccess, không có quyền viewPaid/viewUnpaid, VÀ KHÔNG PHẢI LÀ TÀI XẾ
+      if (!isFullAccess && !viewUnpaid && !viewPaid && !effectiveIsDriverRole) {
+        query.status = 1; // Mặc định chỉ xem đơn đã thanh toán
+        if (userFullname) {
+          query.sellerName = { $regex: escapeRegExp(userFullname), $options: "i" };
+        }
       }
     }
     if (paymentMethod !== null && paymentMethod !== undefined && paymentMethod !== "") {
       query.paymentMethod = Number(paymentMethod);
     }
     if (paidBy) {
-      query.paidBy = paidBy;
+      query.paidBy = { $regex: escapeRegExp(paidBy), $options: "i" };
     }
     if (paidDateFrom || paidDateTo) {
       query.paidDateAt = {};
-      if (paidDateFrom) query.paidDateAt.$gte = new Date(paidDateFrom);
-      if (paidDateTo) query.paidDateAt.$lte = new Date(paidDateTo);
+      if (paidDateFrom) {
+        query.paidDateAt.$gte = dayjs.tz(paidDateFrom, "Asia/Ho_Chi_Minh").startOf("day").toDate();
+      }
+      if (paidDateTo) {
+        query.paidDateAt.$lte = dayjs.tz(paidDateTo, "Asia/Ho_Chi_Minh").endOf("day").toDate();
+      }
     }
     if (arrivalDate) {
-      const date = new Date(arrivalDate);
-      const nextDay = new Date(date);
-      nextDay.setDate(nextDay.getDate() + 1);
-      query.arrivalDate = { $gte: date, $lt: nextDay };
+      const startOfDay = dayjs.tz(arrivalDate, "Asia/Ho_Chi_Minh").startOf("day").toDate();
+      const endOfDay = dayjs.tz(arrivalDate, "Asia/Ho_Chi_Minh").endOf("day").toDate();
+      query.arrivalDate = { $gte: startOfDay, $lte: endOfDay };
+    }
+
+    if (paidDateAt && !paidDateFrom && !paidDateTo) {
+      const startOfDay = dayjs.tz(paidDateAt, "Asia/Ho_Chi_Minh").startOf("day").toDate();
+      const endOfDay = dayjs.tz(paidDateAt, "Asia/Ho_Chi_Minh").endOf("day").toDate();
+      query.paidDateAt = { $gte: startOfDay, $lte: endOfDay };
     }
 
     await connectDB();
@@ -92,8 +223,19 @@ export async function GET(request: Request) {
     // Sử dụng Aggregate để JOIN với bảng users
     const transactions = await Transaction.aggregate([
       { $match: query },
-      // Ưu tiên sắp xếp theo Ngày đến (customerModifiedDate), sau đó là updatedAt
-      { $sort: { customerModifiedDate: -1, updatedAt: -1 } },
+      // Tạo trường ảo để sắp xếp chuẩn theo Ngày đến (giống logic hiển thị của frontend)
+      {
+        $addFields: {
+          effectiveDate: { 
+            $ifNull: [
+              "$arrivalDate", 
+              { $ifNull: ["$customerModifiedDate", "$updatedAt"] }
+            ] 
+          }
+        }
+      },
+      // Ưu tiên sắp xếp theo effectiveDate, sau đó là updatedAt
+      { $sort: { effectiveDate: -1, updatedAt: -1 } },
       // Bước A: Chuyển đổi paidBy và updatedBy sang ObjectId nếu là chuỗi ID 24 ký tự
       {
         $addFields: {
@@ -168,8 +310,10 @@ export async function GET(request: Request) {
               then: { 
                 $ifNull: [
                   { $arrayElemAt: ["$payerInfo.fullname", 0] }, 
-                  { $arrayElemAt: ["$payerInfo.fullName", 0] },
-                  "$paidBy"
+                  { $ifNull: [
+                    { $arrayElemAt: ["$payerInfo.fullName", 0] },
+                    "$paidBy"
+                  ]}
                 ] 
               },
               else: "$paidBy"
@@ -181,8 +325,10 @@ export async function GET(request: Request) {
               then: { 
                 $ifNull: [
                   { $arrayElemAt: ["$updaterInfo.fullname", 0] }, 
-                  { $arrayElemAt: ["$updaterInfo.fullName", 0] },
-                  "$updatedBy"
+                  { $ifNull: [
+                    { $arrayElemAt: ["$updaterInfo.fullName", 0] },
+                    "$updatedBy"
+                  ]}
                 ] 
               },
               else: "$updatedBy"

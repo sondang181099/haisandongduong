@@ -1,30 +1,32 @@
 "use client";
 
 import { signOut } from "next-auth/react";
-import { Box, Group, Text, Avatar, Menu, ActionIcon } from "@mantine/core";
+import { Box, Group, Text, Avatar, Menu, ActionIcon, Burger } from "@mantine/core";
 import { IconLogout, IconChevronDown } from "@tabler/icons-react";
 
 interface TopbarProps {
   userName?: string | null;
+  opened?: boolean;
+  toggle?: () => void;
 }
 
-export function Topbar({ userName }: TopbarProps) {
+export function Topbar({ userName, opened, toggle }: TopbarProps) {
   return (
     <Box
       style={{
-        height: 60,
+        height: "100%",
         background: "white",
         borderBottom: "1px solid #e9ecef",
-        padding: "0 24px",
+        padding: "0 16px",
         display: "flex",
         alignItems: "center",
-        justifyContent: "flex-end",
+        justifyContent: "space-between",
         boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
-        position: "sticky",
-        top: 0,
-        zIndex: 90,
       }}
     >
+      <Group>
+        <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
+      </Group>
       <Menu shadow="md" width={180} position="bottom-end">
         <Menu.Target>
           <Box

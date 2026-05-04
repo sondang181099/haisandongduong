@@ -2,7 +2,7 @@
  * Calculates profit (commission) based on revenue and vehicle configuration.
  * Safe implementation that avoids eval().
  */
-export function calculateProfit(revenue: number, group: string, configs: any[]): number {
+export function calculateProfit(revenue: number, group: string, configs: any[], extraRevenue: number = 0): number {
   if (!group || group === "Chưa xác định") return 0;
   
   // Find matching config by name (case-insensitive and trimmed)
@@ -24,6 +24,9 @@ export function calculateProfit(revenue: number, group: string, configs: any[]):
   const roundingStepValue = rounding?.step || 1000;
   let profit = 0;
 
+  // TỔNG DOANH THU = Doanh thu gốc + Phát sinh
+  const totalRevenue = revenue + (extraRevenue || 0);
+
   // 1. Initial Calculation from Formula
   if (formula) {
     // Robust parsing: find multiplier after "R" and "*"
@@ -32,13 +35,13 @@ export function calculateProfit(revenue: number, group: string, configs: any[]):
       const parts = cleanFormula.split("R*");
       const multiplier = parseFloat(parts[1]);
       if (!isNaN(multiplier)) {
-        profit = revenue * multiplier;
+        profit = totalRevenue * multiplier;
       }
     } else if (cleanFormula.includes("*R")) {
       const parts = cleanFormula.split("*R");
       const multiplier = parseFloat(parts[0]);
       if (!isNaN(multiplier)) {
-        profit = revenue * multiplier;
+        profit = totalRevenue * multiplier;
       }
     }
   }
@@ -51,13 +54,13 @@ export function calculateProfit(revenue: number, group: string, configs: any[]):
 
       switch (cond.type) {
         case "less_than":
-          if (revenue < values[0]) isMatch = true;
+          if (totalRevenue < values[0]) isMatch = true;
           break;
         case "greater_than":
-          if (revenue > values[0]) isMatch = true;
+          if (totalRevenue > values[0]) isMatch = true;
           break;
         case "range":
-          if (values.length >= 2 && revenue >= values[0] && revenue <= values[1]) {
+          if (values.length >= 2 && totalRevenue >= values[0] && totalRevenue <= values[1]) {
             isMatch = true;
           }
           break;
@@ -70,7 +73,7 @@ export function calculateProfit(revenue: number, group: string, configs: any[]):
             profit = actionValue;
             break;
           case "percent_result":
-            profit = revenue * (actionValue / 100);
+            profit = totalRevenue * (actionValue / 100);
             break;
           case "bonus_amount":
             profit += actionValue;
@@ -80,7 +83,7 @@ export function calculateProfit(revenue: number, group: string, configs: any[]):
     }
   }
 
-  // 3. Apply Rounding
+  // 4. Apply Rounding
   const step = Math.max(1, roundingStepValue || 1000);
   
   switch (roundingType) {

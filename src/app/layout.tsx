@@ -7,13 +7,14 @@ import { ColorSchemeInitializer } from "./ColorSchemeInitializer";
 import "@mantine/core/styles.css";
 import "@mantine/dates/styles.css";
 import "@mantine/notifications/styles.css";
+import "@mantine/charts/styles.css";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin", "vietnamese"] });
 
 export const metadata: Metadata = {
-  title: "Hải Sản Đông Dương - Admin",
-  description: "Hệ thống quản lý nội bộ Hải Sản Đông Dương",
+  title: "Hệ thống Admin",
+  description: "Hệ thống quản lý nội bộ",
 };
 
 const theme = createTheme({

@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: ["@mantine/core", "@mantine/hooks"],
   },
+  serverExternalPackages: ["socket.io"],
   allowedDevOrigins: ["192.168.31.113", "localhost"],
 };
 

@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Box, Button, Group, TextInput, Title, Table, Text, Badge,
   Modal, Stack, Select, PasswordInput, ActionIcon, Tooltip,
-  Card, ScrollArea, Loader, Center, Pagination,
+  Card, ScrollArea, Loader, Center, Pagination, Autocomplete,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { notifications } from "@mantine/notifications";
@@ -268,20 +268,20 @@ export default function UsersPage() {
 
       {/* Filters */}
       <Card shadow="xs" radius="md" mb="md" p="md">
-        <Group>
+        <Group wrap="wrap">
           <TextInput
             placeholder="Tìm kiếm tài khoản, họ tên, CMND..."
             leftSection={<IconSearch size={16} />}
             value={search}
             onChange={(e) => { setSearch(e.currentTarget.value); setPage(1); }}
-            style={{ flex: 1 }}
+            style={{ flex: 1, minWidth: 280 }}
           />
           <DatePickerInput
             placeholder="Lọc theo ngày đăng nhập"
             value={dateFilter}
             onChange={(val) => { setDateFilter(val); setPage(1); }}
             clearable
-            style={{ width: 220 }}
+            style={{ width: "100%", maxWidth: 220 }}
           />
         </Group>
       </Card>
@@ -356,7 +356,7 @@ export default function UsersPage() {
                       <Table.Td>
                         <Text size="sm">
                           {user.lastLoginAt
-                            ? dayjs(user.lastLoginAt).format("DD/MM/YYYY HH:mm")
+                            ? dayjs(user.lastLoginAt).format("HH:mm DD/MM/YYYY")
                             : "—"}
                         </Text>
                       </Table.Td>
@@ -419,7 +419,7 @@ export default function UsersPage() {
             <Text size="sm" fw={600} c="dimmed" tt="uppercase" style={{ letterSpacing: "0.05em" }}>
               Thông tin tài khoản
             </Text>
-            <Group grow>
+            <Group grow wrap="wrap">
               <TextInput
                 label="Tài khoản"
                 placeholder="Nhập tên đăng nhập..."
@@ -432,7 +432,7 @@ export default function UsersPage() {
                 {...form.getInputProps("password")}
               />
             </Group>
-            <Group grow>
+            <Group grow wrap="wrap">
               <TextInput
                 label="Họ và tên"
                 placeholder="Nhập họ tên đầy đủ..."
@@ -444,21 +444,21 @@ export default function UsersPage() {
                 {...form.getInputProps("identity")}
               />
             </Group>
-            <Group grow>
+            <Group grow wrap="wrap">
               <Select
                 label="Vai trò"
                 placeholder="Chọn vai trò..."
                 data={dbRoles.map(r => ({ value: r.key, label: r.name }))}
                 {...form.getInputProps("role")}
               />
-              <Box style={{ flex: 1 }} />
+              <Box style={{ flex: 1 }} visibleFrom="sm" />
             </Group>
 
 
             <Text size="sm" fw={600} c="dimmed" tt="uppercase" style={{ letterSpacing: "0.05em" }}>
               Thông tin ngân hàng
             </Text>
-            <Group grow>
+            <Group grow wrap="wrap">
               <Select
                 label="Ngân hàng"
                 placeholder="Chọn ngân hàng..."
@@ -473,7 +473,7 @@ export default function UsersPage() {
                 {...form.getInputProps("bankAccount")}
               />
             </Group>
-            <Group grow>
+            <Group grow wrap="wrap">
               <TextInput
                 label="Chủ tài khoản"
                 placeholder="Tên chủ tài khoản..."
@@ -489,26 +489,28 @@ export default function UsersPage() {
             <Card withBorder radius="md" p="md">
               <Text size="sm" fw={600} mb="xs">Thông tin xe</Text>
               <Stack gap="sm">
-                <Group align="flex-end" grow>
-                  <TextInput
-                    label="Biển số xe"
-                    placeholder="Nhập biển số xe..."
-                    value={newCarPlate}
-                    onChange={(e) => setNewCarPlate(e.currentTarget.value.toUpperCase())}
-                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCar())}
-                  />
-                  <TextInput
-                    label="Loại xe"
-                    placeholder="VD: 45 chỗ..."
-                    value={newCarType}
-                    onChange={(e) => setNewCarType(e.currentTarget.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCar())}
-                  />
+                <Group align="flex-end" wrap="nowrap" gap="sm">
+                  <Group grow style={{ flex: 1 }} gap="sm">
+                    <TextInput
+                      label="Biển số xe"
+                      placeholder="Nhập biển số xe..."
+                      value={newCarPlate}
+                      onChange={(e) => setNewCarPlate(e.currentTarget.value.toUpperCase())}
+                      onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCar())}
+                    />
+                    <Autocomplete
+                      label="Loại xe"
+                      placeholder="VD: 45 chỗ..."
+                      data={["4 chỗ", "7 chỗ", "16 chỗ", "29 chỗ", "35 chỗ", "45 chỗ", "Taxi"]}
+                      value={newCarType}
+                      onChange={setNewCarType}
+                      onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCar())}
+                    />
+                  </Group>
                   <Button 
                     variant="light" 
                     onClick={addCar}
                     leftSection={<IconPlus size={14} />}
-                    style={{ flex: 0 }}
                   >
                     Thêm
                   </Button>

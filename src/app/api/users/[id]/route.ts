@@ -40,16 +40,13 @@ export async function PUT(
     if (identity !== undefined) updateData.identity = identity;
     
     if (cars !== undefined) {
-      const existingCars = existingUser.cars || [];
       updateData.cars = (cars || []).map((c: any) => {
-        const plate = typeof c === "string" ? c : c.licensePlate;
-        // Tìm xe cũ để giữ lại brands
-        const found = existingCars.find((ec: any) => (typeof ec === "object" ? ec.licensePlate : ec) === plate);
-        if (found && typeof found === "object") {
-          return { ...found, licensePlate: plate };
-        }
-        return { licensePlate: plate, brands: [] };
-      });
+        if (typeof c === "string") return { licensePlate: c, brands: [] };
+        return {
+          licensePlate: c.licensePlate || "",
+          brands: Array.isArray(c.brands) ? c.brands : (c.brands ? [c.brands] : [])
+        };
+      }).filter((c: any) => c.licensePlate);
     }
     
     if (password) {

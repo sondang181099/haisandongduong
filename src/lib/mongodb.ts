@@ -1,6 +1,6 @@
 import mongoose from "mongoose";
 
-const MONGODB_URI = process.env.MONGODB_URI;
+const getMongoDBUri = () => process.env.MONGODB_URI;
 
 interface GlobalMongoose {
   conn: typeof mongoose | null;
@@ -21,7 +21,8 @@ if (!global.mongooseGlobal) {
 export async function connectDB() {
   if (cached.conn) return cached.conn;
 
-  if (!MONGODB_URI) {
+  const uri = getMongoDBUri();
+  if (!uri) {
     throw new Error("Please define the MONGODB_URI environment variable inside .env.local or .env.server");
   }
 
@@ -32,7 +33,7 @@ export async function connectDB() {
       connectTimeoutMS: 10000,
     };
 
-    cached.promise = mongoose.connect(MONGODB_URI, opts);
+    cached.promise = mongoose.connect(uri, opts);
   }
 
   try {

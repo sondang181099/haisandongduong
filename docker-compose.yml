@@ -1,8 +1,38 @@
+version: '3.8'
+
 services:
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: haisandongduong-app
     ports:
       - "4000:4000"
     env_file:
       - .env.server
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - NEXTAUTH_URL=http://techinfom.com/
+      - NEXT_PUBLIC_SOCKET_URL=http://techinfom.com/
     restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Nếu bạn muốn chạy MongoDB bằng Docker, hãy bỏ comment phần dưới đây
+# và cập nhật MONGODB_URI trong .env.server thành mongodb://db:27017/haisandongduong
+#
+#   db:
+#     image: mongo:latest
+#     container_name: haisandongduong-db
+#     ports:
+#       - "27017:27017"
+#     volumes:
+#       - mongo-data:/data/db
+#     restart: always
+#
+# volumes:
+#   mongo-data:

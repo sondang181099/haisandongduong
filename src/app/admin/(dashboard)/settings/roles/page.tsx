@@ -33,7 +33,7 @@ import {
 // Danh sách các menu có sẵn trong hệ thống để gán quyền
 const MENU_ITEMS = [
   { id: "/admin/users", label: "Quản lý người dùng" },
-  { id: "/admin/revenue", label: "Quản lý doanh thu" },
+  { id: "/admin/revenue", label: "Doanh thu chi tiết" },
   { id: "/admin/revenue-table", label: "Bảng doanh thu" },
   { id: "/admin/settings", label: "Thiết lập (Menu cha)" },
   { id: "/admin/revenue/config", label: "Thiết lập hoa hồng" },
@@ -48,6 +48,10 @@ interface Role {
   description: string;
   permissions: string[];
   viewUnpaid?: boolean;
+  viewPaid?: boolean;
+  viewRevenueOverview?: boolean;
+  canDeleteLocal?: boolean;
+  isDriverRole?: boolean;
   isSystem?: boolean;
 }
 
@@ -65,6 +69,10 @@ export default function RoleSettingsPage() {
       description: "",
       permissions: [] as string[],
       viewUnpaid: false,
+      viewPaid: false,
+      viewRevenueOverview: false,
+      canDeleteLocal: false,
+      isDriverRole: false,
     },
     validate: {
       name: (value) => (value.length < 2 ? "Tên quyền quá ngắn" : null),
@@ -99,6 +107,10 @@ export default function RoleSettingsPage() {
       description: role.description || "",
       permissions: role.permissions || [],
       viewUnpaid: !!role.viewUnpaid,
+      viewPaid: !!role.viewPaid,
+      viewRevenueOverview: !!role.viewRevenueOverview,
+      canDeleteLocal: !!role.canDeleteLocal,
+      isDriverRole: !!role.isDriverRole,
     });
     setModalOpen(true);
   };
@@ -272,10 +284,72 @@ export default function RoleSettingsPage() {
               {...form.getInputProps("description")}
             />
 
+            {/* Quyền xem đơn hàng - dạng thẻ card */}
+            <Box>
+              <Text size="sm" fw={600} mb="xs">Quyền xem đơn hàng:</Text>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                {[
+                  { key: "viewUnpaid", label: "Chưa thanh toán" },
+                  { key: "viewPaid",   label: "Đã thanh toán" },
+                  { key: "canDeleteLocal", label: "Xóa khách hàng (Ẩn)" },
+                  { key: "isDriverRole", label: "🚗 Tài xế (chỉ xem xe của mình)" },
+                ].map(({ key, label }) => {
+                  const checked = !!form.values[key as keyof typeof form.values];
+                  return (
+                    <label
+                      key={key}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "10px 14px",
+                        borderRadius: 10,
+                        border: checked ? "2px solid #339af0" : "2px solid #dee2e6",
+                        background: checked ? "#e7f5ff" : "#fff",
+                        cursor: "pointer",
+                        transition: "all .15s",
+                        userSelect: "none",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 20,
+                          height: 20,
+                          borderRadius: 4,
+                          border: checked ? "none" : "2px solid #adb5bd",
+                          background: checked ? "#228be6" : "#fff",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                          transition: "all .15s",
+                        }}
+                      >
+                        {checked && (
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <path d="M2 6L5 9L10 3" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        )}
+                      </div>
+                      <Text size="sm" fw={500} c={checked ? "blue.9" : "gray.7"} style={{ lineHeight: 1.3 }}>
+                        {label}
+                      </Text>
+                      <input
+                        type="checkbox"
+                        style={{ display: "none" }}
+                        checked={checked}
+                        onChange={() => form.setFieldValue(key, !checked)}
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+            </Box>
+
             <Checkbox
-              label="Cho phép xem đơn chưa thanh toán"
-              description="Nếu tích chọn, người dùng thuộc vai trò này sẽ thấy các đơn hàng có trạng thái chưa thanh toán."
-              {...form.getInputProps("viewUnpaid", { type: "checkbox" })}
+              label="Cho phép xem Tổng quan doanh thu và biểu đồ"
+              description="Nếu tích chọn, người dùng sẽ thấy phần thống kê tổng quan và biểu đồ doanh thu hàng tháng."
+              {...form.getInputProps("viewRevenueOverview", { type: "checkbox" })}
             />
 
             <Box>

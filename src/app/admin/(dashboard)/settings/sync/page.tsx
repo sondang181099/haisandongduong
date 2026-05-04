@@ -1,23 +1,62 @@
 "use client";
 
-import { Box, Title, Card, Text, Stack, Button, Group, Switch, NumberInput } from "@mantine/core";
+import { Box, Title, Card, Text, Stack, Button, Group, Switch, NumberInput, LoadingOverlay } from "@mantine/core";
 import { IconRefresh, IconSettings } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
+import { useState, useEffect } from "react";
 
 export default function SyncSettingsPage() {
-  const handleSave = () => {
-    notifications.show({
-      title: "Thành công",
-      message: "Đã lưu cài đặt đồng bộ",
-      color: "green",
-    });
+  const [interval, setIntervalValue] = useState<number>(10);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/settings/sync")
+      .then(res => res.json())
+      .then(data => {
+        if (data.interval) setIntervalValue(data.interval);
+      })
+      .catch(err => {
+        console.error("Fetch sync setting failed:", err);
+        notifications.show({ message: "Không thể tải cài đặt đồng bộ", color: "red" });
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/settings/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interval }),
+      });
+
+      if (!res.ok) throw new Error("Lỗi khi lưu");
+
+      notifications.show({
+        title: "Thành công",
+        message: `Đã cập nhật khoảng thời gian đồng bộ thành ${interval} giây`,
+        color: "green",
+      });
+    } catch (error) {
+      notifications.show({ message: "Không thể lưu cài đặt", color: "red" });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <Box>
+    <Box style={{ position: "relative" }}>
+      <LoadingOverlay visible={loading} overlayProps={{ blur: 1 }} />
+      
       <Group justify="space-between" mb="lg">
         <Title order={3}>Thiết lập đồng bộ</Title>
-        <Button leftSection={<IconSettings size={16} />} onClick={handleSave}>
+        <Button 
+          leftSection={<IconSettings size={16} />} 
+          onClick={handleSave}
+          loading={saving}
+        >
           Lưu cài đặt
         </Button>
       </Group>
@@ -29,13 +68,15 @@ export default function SyncSettingsPage() {
             <Switch
               label="Bật đồng bộ ngầm định kỳ"
               defaultChecked
-              description="Hệ thống sẽ tự động quét hóa đơn mới từ KiotViet mỗi 5 phút."
+              description={`Hệ thống sẽ tự động quét hóa đơn mới từ KiotViet mỗi ${interval} giây.`}
             />
             <NumberInput
-              label="Khoảng thời gian đồng bộ (phút)"
-              defaultValue={5}
-              min={1}
-              style={{ maxWidth: 200 }}
+              label="Khoảng thời gian đồng bộ (giây)"
+              description="Tối thiểu 10 giây để đảm bảo ổn định hệ thống và API KiotViet."
+              value={interval}
+              onChange={(val) => setIntervalValue(Number(val))}
+              min={10}
+              style={{ maxWidth: 300 }}
             />
           </Stack>
         </Card>

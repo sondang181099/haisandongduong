@@ -3,6 +3,7 @@ import { connectDB } from "@/lib/mongodb";
 import { Transaction } from "@/models/Transaction";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { emitRevenueUpdate } from "@/lib/socket-server";
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -11,7 +12,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await request.json();
-    const { status, paymentMethod, profit } = body;
+    const { status, paymentMethod, profit, reducedRevenue } = body;
     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const userRole = (session.user as any)?.role || "Sale";
@@ -37,6 +38,10 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
         transaction.status = 1;
         transaction.paidDateAt = new Date();
         transaction.paidBy = displayName;
+        transaction.revenueAtPayment = transaction.revenue;
+        if (reducedRevenue !== undefined) {
+          transaction.reducedRevenueAtPayment = Number(reducedRevenue);
+        }
       } else {
         // Admin: Quyền Re-open (chuyển status = 0) hoặc tuỳ ý sửa
         transaction.status = status;
@@ -44,12 +49,18 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
           // Luôn cập nhật hoặc gán mới khi Admin nhấn thanh toán
           transaction.paidDateAt = new Date();
           transaction.paidBy = displayName;
+          transaction.revenueAtPayment = transaction.revenue;
+          if (reducedRevenue !== undefined) {
+            transaction.reducedRevenueAtPayment = Number(reducedRevenue);
+          }
         } else if (status === 0) {
           // Khi mở lại: Xóa dấu vết thanh toán cũ, đưa phương thức và hoa hồng về 0
           transaction.paidDateAt = undefined;
           transaction.paidBy = undefined;
           transaction.paymentMethod = 0;
           transaction.profit = 0;
+          transaction.revenueAtPayment = undefined;
+          transaction.reducedRevenueAtPayment = undefined;
           transaction.markModified("paymentMethod");
         }
       }
@@ -73,6 +84,9 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 
     transaction.updatedBy = username;
     await transaction.save();
+
+    // Phát tín hiệu WebSocket để các màn hình cập nhật dữ liệu
+    emitRevenueUpdate();
 
     return NextResponse.json({ message: "Cập nhật thành công", transaction });
   } catch (error) {

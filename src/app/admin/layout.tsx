@@ -12,8 +12,8 @@ export default async function AdminLayout({
   if (!session) redirect("/login");
 
   return (
-    <Box style={{ minHeight: "100vh", background: "#f8f9fa" }}>
+    <div style={{ minHeight: "100vh", background: "#f8f9fa" }}>
       {children}
-    </Box>
+    </div>
   );
 }

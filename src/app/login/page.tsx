@@ -56,46 +56,38 @@ export default function LoginPage() {
     <Box
       style={{
         minHeight: "100vh",
-        background: "linear-gradient(135deg, #e7f3ff 0%, #f8f9fa 50%, #e3f2ff 100%)",
+        backgroundImage: "url('/login-bg.png')",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        padding: "20px",
+        position: "relative",
       }}
     >
+      <Box style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.2)", zIndex: 0 }} />
       <Card
         shadow="xl"
         padding="xl"
-        radius="md"
+        radius="lg"
         style={{
           width: "100%",
           maxWidth: 420,
-          border: "1px solid #e0e7ef",
+          background: "rgba(255, 255, 255, 0.88)",
+          backdropFilter: "blur(15px)",
+          border: "1px solid rgba(255, 255, 255, 0.3)",
+          boxShadow: "0 20px 40px rgba(0,0,0,0.2)",
+          zIndex: 1,
         }}
       >
         <Stack gap="lg">
           {/* Logo */}
           <Center>
             <Stack align="center" gap={4}>
-              <Box
-                style={{
-                  width: 64,
-                  height: 64,
-                  borderRadius: 16,
-                  background: "linear-gradient(135deg, #228be6, #1971c2)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  boxShadow: "0 8px 24px rgba(34,139,230,0.3)",
-                }}
-              >
-                <Image src="/logo.png" alt="Logo" w={52} h={52} fit="contain" />
-              </Box>
-              <Title order={2} c="dark.7" mt={4}>
-                Hải Sản Đông Dương
+              <Title order={2} c="dark.8" fw={800} style={{ letterSpacing: "-0.5px" }}>
+                Đăng nhập hệ thống
               </Title>
-              <Text size="sm" c="dimmed">
-                Hệ thống quản lý nội bộ
-              </Text>
             </Stack>
           </Center>
 

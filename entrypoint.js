@@ -1,0 +1,107 @@
+const { createServer } = require("http");
+const { parse } = require("url");
+const next = require("next");
+const { loadEnvConfig } = require("@next/env");
+const { initSocket } = require("./socket-server");
+
+const projectDir = process.cwd();
+loadEnvConfig(projectDir);
+
+const dev = process.env.NODE_ENV !== "production";
+const hostname = "0.0.0.0";
+const port = parseInt(process.env.PORT || "4000", 10);
+
+// Khởi tạo ứng dụng Next.js
+const app = next({ dev, hostname, port });
+const handle = app.getRequestHandler();
+
+app.prepare().then(() => {
+  const httpServer = createServer((req, res) => {
+    try {
+      const parsedUrl = parse(req.url, true);
+      handle(req, res, parsedUrl);
+    } catch (err) {
+      console.error("Error occurred handling", req.url, err);
+      res.statusCode = 500;
+      res.end("Internal server error");
+    }
+  });
+
+  // Tích hợp Socket.io
+  initSocket(httpServer);
+
+  // --- Tự động đồng bộ KiotViet mỗi 5 phút ---
+  const { runKiotVietSync } = require("./src/lib/sync-service");
+  
+  const startAutoSync = async () => {
+    const { SystemSetting } = require("./src/models/SystemSetting");
+    const { connectDB } = require("./src/lib/mongodb");
+
+    console.log("[Server] Initializing auto-sync with dynamic interval...");
+    await connectDB();
+
+    const getInterval = async () => {
+      try {
+        const setting = await SystemSetting.findOne({ key: "sync_interval_seconds" });
+        const intervalValue = setting?.value || 10;
+        // Áp dụng giới hạn tối thiểu 10 giây để bảo vệ hệ thống
+        const safeInterval = Math.max(intervalValue, 10);
+        return safeInterval * 1000;
+      } catch (err) {
+        console.error("[Server] Error fetching sync interval, defaulting to 10s:", err);
+        return 10 * 1000;
+      }
+    };
+
+    const { exec } = require("child_process");
+    const path = require("path");
+
+    const triggerSync = async () => {
+      console.log(`[Server] Running scheduled PYTHON sync at ${new Date().toLocaleTimeString()}...`);
+      try {
+        const pythonScript = path.join(projectDir, "kiotviet-sync-python", "sync_kiotviet.py");
+        // Gọi script Python với chế độ auto
+        const { emitRevenueUpdate } = require("./socket-server");
+        exec(`python3 "${pythonScript}" auto`, (error, stdout, stderr) => {
+          if (error) {
+            console.error(`[Server] Python sync error: ${error.message}`);
+            return;
+          }
+          if (stderr) {
+            console.warn(`[Server] Python sync warning: ${stderr}`);
+          }
+          console.log(`[Server] Python sync completed:\n${stdout.split('\n').filter(l => l.startsWith('->')).join('\n')}`);
+          
+          // Phát tín hiệu cập nhật qua WebSocket
+          emitRevenueUpdate();
+        });
+      } catch (err) {
+        console.error("[Server] Failed to trigger Python sync:", err);
+      }
+
+      
+      const nextInterval = await getInterval();
+      console.log(`[Server] Next sync in ${nextInterval / 1000} seconds.`);
+      setTimeout(triggerSync, nextInterval);
+    };
+
+    // Bắt đầu chu kỳ đồng bộ đầu tiên sau khi server đã sẵn sàng
+    console.log("[Server] Starting first Python sync cycle...");
+    triggerSync(); 
+  };
+
+
+
+  httpServer.once("error", (err) => {
+    console.error(err);
+    process.exit(1);
+  });
+
+  httpServer.listen(port, () => {
+    console.log(`> Ready on http://${hostname}:${port}`);
+    console.log(`> Node Environment: ${process.env.NODE_ENV}`);
+    
+    // Bắt đầu đồng bộ sau khi server đã lắng nghe
+    startAutoSync();
+  });
+});

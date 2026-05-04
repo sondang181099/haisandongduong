@@ -28,7 +28,7 @@ const navItems = [
     icon: IconUsers,
   },
   {
-    label: "Quản lý doanh thu",
+    label: "Doanh thu chi tiết",
     href: "/admin/revenue",
     icon: IconCurrencyDong,
   },
@@ -42,13 +42,16 @@ const navItems = [
     label: "Bảng doanh thu",
     href: "/admin/revenue-table",
     icon: IconTable,
-    target: "_blank",
   },
   {
     label: "Thiết lập",
     href: "/admin/settings",
     icon: IconSettings,
     children: [
+      {
+        label: "Thiết lập hiển thị giảm",
+        href: "/admin/settings/reduction",
+      },
       {
         label: "Thiết lập hoa hồng",
         href: "/admin/revenue/config",
@@ -65,7 +68,7 @@ const navItems = [
   },
 ];
 
-export function Sidebar() {
+export function Sidebar({ onMobileClose }: { onMobileClose?: () => void }) {
   const pathname = usePathname();
   const { data: session } = useSession();
   const [permissions, setPermissions] = useState<string[]>([]);
@@ -133,6 +136,7 @@ export function Sidebar() {
       leftSection: item.icon ? <item.icon size={18} /> : null,
       active: isActive,
       defaultOpened: isActive,
+      onClick: onMobileClose, // Đóng menu trên mobile khi click
       style: {
         borderRadius: 8,
         fontWeight: isActive ? 600 : 400,
@@ -157,6 +161,7 @@ export function Sidebar() {
               href={child.href}
               label={child.label}
               active={pathname === child.href}
+              onClick={onMobileClose} // Đóng menu trên mobile khi click
               style={{ borderRadius: 8 }}
             />
           ))}
@@ -177,7 +182,7 @@ export function Sidebar() {
 
   if (loadingPermissions && userRole !== "admin") {
     return (
-      <Box style={{ width: 240, height: "100vh", background: "white", borderRight: "1px solid #e9ecef" }}>
+      <Box style={{ width: "100%", height: "100%", background: "white" }}>
         <Center h="100%"><Loader size="sm" /></Center>
       </Box>
     );
@@ -186,18 +191,11 @@ export function Sidebar() {
   return (
     <Box
       style={{
-        width: 240,
-        height: "100vh",
-        position: "sticky",
-        top: 0,
-        background: "white",
-        borderRight: "1px solid #e9ecef",
+        height: "100%",
         display: "flex",
         flexDirection: "column",
-        flexShrink: 0,
-        boxShadow: "2px 0 8px rgba(0,0,0,0.04)",
+        background: "white",
         overflowY: "auto",
-        zIndex: 100,
       }}
     >
       {/* Logo */}
@@ -205,29 +203,30 @@ export function Sidebar() {
         style={{
           padding: "20px 16px",
           borderBottom: "1px solid #e9ecef",
-          background: "linear-gradient(135deg, #228be6 0%, #1971c2 100%)",
+          background: "white",
         }}
       >
         <Box style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <Box
             style={{
-              width: 48,
-              height: 48,
-              borderRadius: 12,
-              background: "rgba(255,255,255,0.2)",
+              width: 56,
+              height: 56,
+              borderRadius: 16,
+              background: "#efaf33",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
             }}
           >
-            <Image src="/logo.png" alt="Logo" w={36} h={36} fit="contain" />
+            <Image src="/logo.png" alt="Logo" w={48} h={48} fit="contain" />
           </Box>
           <Box>
-            <Text size="sm" fw={700} c="white" lh={1.2}>
-              Hải Sản
+            <Text size="sm" fw={700} c="dark" lh={1.2}>
+              Hệ thống
             </Text>
-            <Text size="xs" c="rgba(255,255,255,0.8)" lh={1.2}>
-              Đông Dương
+            <Text size="xs" c="dimmed" lh={1.2}>
+              Quản trị admin
             </Text>
           </Box>
         </Box>

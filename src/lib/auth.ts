@@ -1,9 +1,9 @@
 import NextAuth, { type NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
 import bcrypt from "bcryptjs";
-import { connectDB } from "@/lib/mongodb";
-import { User } from "@/models/User";
-import { Role } from "@/models/Role";
+import { connectDB } from "./mongodb";
+import { User } from "../models/User";
+import { Role } from "../models/Role";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -42,7 +42,13 @@ export const authOptions: NextAuthOptions = {
             name: user.fullname,
             email: user.username,
             role: user.role,
+            fullname: user.fullname,
+            cars: user.cars || [],
             viewUnpaid: roleData ? !!roleData.viewUnpaid : false,
+            viewPaid: roleData ? !!roleData.viewPaid : false,
+            viewRevenueOverview: roleData ? !!roleData.viewRevenueOverview : false,
+            canDeleteLocal: roleData ? !!roleData.canDeleteLocal : false,
+            isDriverRole: roleData ? !!roleData.isDriverRole : false,
           };
         } catch (error) {
           console.error("Auth error:", error);
@@ -56,7 +62,13 @@ export const authOptions: NextAuthOptions = {
       if (user) {
         token.role = (user as any).role;
         token.username = user.email;
+        token.fullname = (user as any).fullname;
+        token.cars = (user as any).cars;
         token.viewUnpaid = (user as any).viewUnpaid;
+        token.viewPaid = (user as any).viewPaid;
+        token.viewRevenueOverview = (user as any).viewRevenueOverview;
+        token.canDeleteLocal = (user as any).canDeleteLocal;
+        token.isDriverRole = (user as any).isDriverRole;
       }
       return token;
     },
@@ -64,7 +76,13 @@ export const authOptions: NextAuthOptions = {
       if (session.user) {
         (session.user as any).role = token.role;
         (session.user as any).username = token.username;
+        (session.user as any).fullname = token.fullname;
+        (session.user as any).cars = token.cars;
         (session.user as any).viewUnpaid = token.viewUnpaid;
+        (session.user as any).viewPaid = token.viewPaid;
+        (session.user as any).viewRevenueOverview = token.viewRevenueOverview;
+        (session.user as any).canDeleteLocal = token.canDeleteLocal;
+        (session.user as any).isDriverRole = token.isDriverRole;
       }
       return session;
     },

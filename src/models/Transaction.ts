@@ -21,9 +21,19 @@ export interface ITransaction extends Document {
   customerId?: number; // ID số từ KiotViet
   brands?: string[]; // Mảng các loại xe/nhóm xe
   isCustomerDeleted?: boolean; // Khách hàng đã bị xóa trên KiotViet
+  isHidden?: boolean; // Khách hàng bị ẩn cục bộ (không hiển thị trên bảng)
   isRevenueChanged?: boolean; // Doanh thu có thay đổi so với gốc
   syncSource?: string; // Nguồn đồng bộ (KiotViet, v.v.)
+  childInvoices?: {
+    code: string;
+    purchaseDate: Date;
+    soldByName: string;
+    total: number;
+    mainProducts: string;
+  }[];
   user?: any; // Thông tin người dùng (liên kết hệ thống)
+  revenueAtPayment?: number; // Doanh thu tại thời điểm thanh toán
+  reducedRevenueAtPayment?: number; // Doanh thu ĐÃ GIẢM tại thời điểm thanh toán
   createdAt: Date;
   updatedAt: Date;
 }
@@ -56,9 +66,21 @@ const TransactionSchema = new Schema<ITransaction>(
     customerId: { type: Number },
     brands: { type: [String], default: [] },
     isCustomerDeleted: { type: Boolean, default: false },
+    isHidden: { type: Boolean, default: false },
     isRevenueChanged: { type: Boolean, default: false },
     syncSource: { type: String, index: true },
+    childInvoices: [
+      {
+        code: { type: String },
+        purchaseDate: { type: Date },
+        soldByName: { type: String },
+        total: { type: Number },
+        mainProducts: { type: String },
+      },
+    ],
     user: { type: mongoose.Schema.Types.Mixed },
+    revenueAtPayment: { type: Number },
+    reducedRevenueAtPayment: { type: Number },
   },
   { timestamps: true }
 );

@@ -1,181 +1,239 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import {
-  Box, Title, Text, NumberFormatter, Card, Group,
-  SimpleGrid, Image,
+  Box, Text, NumberFormatter, Table,
+  SimpleGrid,
 } from "@mantine/core";
 import { useSearchParams } from "next/navigation";
 import dayjs from "dayjs";
+import { useSocket } from "@/hooks/useSocket";
+import { getReducedRevenue, ReductionRule, type ReductionConfig } from "@/lib/reduction";
 
 interface Transaction {
   _id: string;
   code: string;
   vehicleNumber: string;
+  groups: string;
   revenue: number;
+  arrivalDate?: string | Date;
+  customerModifiedDate?: string | Date;
+  createdAt?: string | Date;
+  status?: number;
+  reducedRevenueAtPayment?: number;
 }
+
+// Hằng số layout (px)
+const HEADER_HEIGHT = 0;      // Không có header trên cùng nữa
+const PADDING_V = 12;         // padding top + bottom của trang (mỗi bên)
+const TABLE_HEADER_H = 44;    // chiều cao header của bảng
+const ROW_H = 46;             // chiều cao mỗi hàng dữ liệu
+const GRID_GAP = 10;          // khoảng cách giữa các cột
 
 export default function PresentationPage() {
   const searchParams = useSearchParams();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [total, setTotal] = useState(0);
-  const [mounted, setMounted] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [reductionRules, setReductionRules] = useState<ReductionRule[] | ReductionConfig>([]);
 
-  // Lấy ngày từ params nếu có
+  // Chiều cao viewport thực tế (tính toán để không scroll)
+  const [viewportH, setViewportH] = useState(768);
+  useEffect(() => {
+    const update = () => setViewportH(window.innerHeight);
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  // Tính số hàng tối đa có thể hiển thị trong 1 màn hình
+  const maxRowsPerCol = useMemo(() => {
+    const availableH = viewportH - PADDING_V * 2 - TABLE_HEADER_H;
+    return Math.max(1, Math.floor(availableH / ROW_H));
+  }, [viewportH]);
+
+  // Lấy ngày từ params
   const dateParam = searchParams.get("date");
-  const parsedSelectedDate = dateParam ? new Date(dateParam) : new Date();
+  const parsedSelectedDate = useMemo(() => {
+    return dateParam ? new Date(dateParam) : new Date();
+  }, [dateParam]);
 
   const fetchData = useCallback(async () => {
     try {
       const params = new URLSearchParams();
       if (parsedSelectedDate) {
-        params.set("paidDateFrom", dayjs(parsedSelectedDate).startOf("day").toISOString());
-        params.set("paidDateTo", dayjs(parsedSelectedDate).endOf("day").toISOString());
+        params.set("arrivalDate", dayjs(parsedSelectedDate).format("YYYY-MM-DD"));
       }
-      
+      params.set("presentationMode", "true");
       const res = await fetch(`/api/revenue?${params}`);
       const data = await res.json();
       const txs: Transaction[] = (data.transactions || [])
-        .sort((a: Transaction, b: Transaction) => (b.revenue || 0) - (a.revenue || 0));
+        .sort((a: Transaction, b: Transaction) => {
+          const dateA = new Date(a.arrivalDate || a.customerModifiedDate || a.createdAt || 0).getTime();
+          const dateB = new Date(b.arrivalDate || b.customerModifiedDate || b.createdAt || 0).getTime();
+          return dateA - dateB;
+        });
       setTransactions(txs);
-      setTotal(txs.reduce((sum: number, t: Transaction) => sum + (t.revenue || 0), 0));
     } catch (e) {
       console.error("Fetch error:", e);
     }
   }, [parsedSelectedDate]);
 
-  useEffect(() => { 
-    setMounted(true);
-    fetchData(); 
-    const interval = setInterval(fetchData, 60000); // Làm mới mỗi phút
-    return () => clearInterval(interval);
-  }, [fetchData]);
+  const { socket } = useSocket();
 
-  // Tự động cuộn
   useEffect(() => {
-    if (!scrollRef.current) return;
-    const element = scrollRef.current;
-    const scrollInterval = setInterval(() => {
-      if (element.scrollHeight <= element.clientHeight) return;
-      element.scrollTop += 1;
-      if (element.scrollTop + element.clientHeight >= element.scrollHeight - 1) {
-        setTimeout(() => { element.scrollTop = 0; }, 3000);
-      }
-    }, 50);
-    return () => clearInterval(scrollInterval);
-  }, [transactions]);
+    fetch("/api/settings/reduction")
+      .then(res => res.json())
+      .then(data => {
+        setReductionRules(data);
+        fetchData();
+      })
+      .catch(() => fetchData());
 
-  const columns: Transaction[][] = [[], [], [], []];
-  transactions.forEach((t, i) => {
-    columns[i % 4].push(t);
-  });
+    if (socket) {
+      socket.on("revenue-updated", async () => {
+        try {
+          const res = await fetch("/api/settings/presentation");
+          const setting = await res.json();
+          if (setting.autoUpdate !== false) {
+            fetchData();
+          }
+        } catch {
+          fetchData();
+        }
+      });
+    }
+    return () => {
+      if (socket) socket.off("revenue-updated");
+    };
+  }, [fetchData, socket]);
+
+  // Chia transactions thành các cột, mỗi cột tối đa maxRowsPerCol hàng
+  const columns = useMemo(() => {
+    if (transactions.length === 0) {
+      // Luôn hiển thị ít nhất 3 cột rỗng
+      return [[], [], []] as Transaction[][];
+    }
+    const chunks: Transaction[][] = [];
+    for (let i = 0; i < transactions.length; i += maxRowsPerCol) {
+      chunks.push(transactions.slice(i, i + maxRowsPerCol));
+    }
+    // Đảm bảo ít nhất 3 cột
+    while (chunks.length < 3) chunks.push([]);
+    return chunks;
+  }, [transactions, maxRowsPerCol]);
+
+  // Hiển thị tất cả cột, không giới hạn – font tự thu nhỏ theo số cột
+  const numCols = columns.length;
+  // Khi nhiều cột, tự động giảm font và padding để vừa màn hình
+  const fontScale = numCols <= 3 ? 1 : numCols <= 5 ? 0.82 : numCols <= 7 ? 0.70 : 0.60;
+  const dynFontSm = `${(0.88 * fontScale).toFixed(2)}rem`;
+  const dynFontMd = `${(0.9 * fontScale).toFixed(2)}rem`;
+  const dynFontLg = `${(1.0 * fontScale).toFixed(2)}rem`;
+  const dynHeaderH = numCols <= 3 ? TABLE_HEADER_H : Math.max(28, Math.round(TABLE_HEADER_H * fontScale));
+  const dynRowH    = numCols <= 3 ? ROW_H          : Math.max(24, Math.round(ROW_H * fontScale));
 
   return (
-    <Box 
-      style={{ 
-        minHeight: "100vh", 
-        width: "100%",
-        backgroundImage: "url('https://images.unsplash.com/photo-1505118380757-91f5f5632de0?q=80&w=2000&auto=format&fit=crop')",
+    <Box
+      style={{
+        height: "100vh",
+        width: "100vw",
+        overflow: "hidden",
+        backgroundImage: "url('https://images.unsplash.com/photo-1507525428034-b723cf961d3e?q=80&w=2000&auto=format&fit=crop')",
         backgroundSize: "cover",
         backgroundPosition: "center",
         backgroundAttachment: "fixed",
-        padding: "30px",
-        color: "white",
         display: "flex",
-        flexDirection: "column"
+        flexDirection: "column",
+        padding: PADDING_V,
+        boxSizing: "border-box",
+        position: "relative",
       }}
     >
-      <Box style={{ 
-        position: "fixed", top: 0, left: 0, right: 0, bottom: 0, 
-        background: "rgba(0,0,0,0.4)", zIndex: 0 
+      {/* Overlay tối */}
+      <Box style={{
+        position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+        background: "rgba(0,0,0,0.25)", zIndex: 0,
       }} />
 
-      <Box style={{ position: "relative", zIndex: 1, flex: 1, display: "flex", flexDirection: "column" }}>
-        {/* Header */}
-        <Group justify="space-between" align="center" mb={40}>
-          <Group gap="xl">
-            <Box p={10} style={{ background: "white", borderRadius: "15px", boxShadow: "0 8px 24px rgba(0,0,0,0.3)" }}>
-              <Image src="/logo.png" alt="Logo" w={100} h={100} fit="contain" />
-            </Box>
-            <Box>
-              <Title order={1} style={{ fontSize: "3.2rem", letterSpacing: "1px", textShadow: "3px 3px 10px rgba(0,0,0,0.8)" }}>
-                ĐẦU MỐI HẢI SẢN ĐÔNG DƯƠNG
-              </Title>
-              <Text c="yellow.4" fw={800} size="2.2rem" style={{ textShadow: "2px 2px 5px rgba(0,0,0,0.8)" }}>
-                KÍNH CHÀO QUÝ KHÁCH!
-              </Text>
-            </Box>
-          </Group>
-
-          <Box ta="right">
-             <Title order={2} mb={10} style={{ fontSize: "2rem", textShadow: "2px 2px 5px rgba(0,0,0,0.5)" }}>
-               DOANH THU NGÀY {dayjs(parsedSelectedDate).format("DD/MM/YYYY")}
-             </Title>
-             <Group gap="40px" justify="flex-end">
-               <Box>
-                 <Text size="md" tt="uppercase" opacity={0.9} fw={600}>Số chuyến</Text>
-                 <Text size="3.5rem" fw={900} c="yellow.4" style={{ lineHeight: 1 }}>{transactions.length}</Text>
-               </Box>
-               <Box>
-                 <Text size="md" tt="uppercase" opacity={0.9} fw={600}>Tổng doanh thu</Text>
-                 <Text size="3.5rem" fw={900} c="green.4" style={{ lineHeight: 1 }}>
-                   <NumberFormatter value={total} thousandSeparator="." decimalSeparator="," suffix=" đ" />
-                 </Text>
-               </Box>
-             </Group>
-          </Box>
-        </Group>
-
-        {/* Table Area */}
-        <Box 
-          ref={scrollRef}
-          style={{ 
-            flex: 1, 
-            overflowY: "auto", 
-            paddingBottom: 60,
-            scrollbarWidth: "none",
-            msOverflowStyle: "none"
-          }}
+      {/* Nội dung chính */}
+      <Box style={{
+        position: "relative",
+        zIndex: 1,
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        gap: GRID_GAP,
+      }}>
+        {/* Grid bảng - chiếm toàn bộ chiều cao còn lại */}
+        <SimpleGrid
+          cols={numCols}
+          spacing={GRID_GAP}
+          style={{ flex: 1, overflow: "hidden", alignItems: "stretch" }}
         >
-          <SimpleGrid cols={4} spacing="xl">
-            {columns.map((col: Transaction[], colIdx: number) => (
-              <Box key={colIdx} style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
-                {col.map((t) => (
-                  <Card 
-                    key={t._id} 
-                    shadow="xl" 
-                    p="md" 
-                    radius="lg"
-                    style={{ 
-                      background: "rgba(255, 255, 255, 0.12)",
-                      backdropFilter: "blur(20px)",
-                      border: "1px solid rgba(255,255,255,0.15)",
-                      color: "white",
-                      transition: "transform 0.2s ease"
-                    }}
-                  >
-                    <Group justify="space-between" wrap="nowrap">
-                      <Box>
-                        <Text size="sm" fw={800} c="yellow.3" mb={4}>{t.code}</Text>
-                        <Text fw={700} size="xl" style={{ letterSpacing: "1px" }}>{t.vehicleNumber || "-"}</Text>
-                      </Box>
-                      <Box ta="right">
-                        <Text size="1.8rem" fw={900} c="green.3">
-                          <NumberFormatter value={t.revenue} thousandSeparator="." decimalSeparator="," />
+          {columns.slice(0, numCols).map((col: Transaction[], colIdx: number) => (
+            <Box
+              key={colIdx}
+              style={{
+                background: "rgba(255, 255, 255, 0.93)",
+                borderRadius: "6px",
+                overflow: "hidden",
+                boxShadow: "0 4px 20px rgba(0,0,0,0.15)",
+                display: "flex",
+                flexDirection: "column",
+                height: "100%",
+              }}
+            >
+              <Table
+                verticalSpacing={0}
+                withTableBorder
+                withColumnBorders
+                withRowBorders
+                style={{ flex: 1, tableLayout: "fixed", width: "100%" }}
+              >
+                <Table.Thead style={{ background: "#3b82f6" }}>
+                  <Table.Tr style={{ height: dynHeaderH }}>
+                    <Table.Th style={{ color: "white", fontSize: dynFontMd, textAlign: "center", width: "25%", padding: "0 3px" }}>Mã đoàn</Table.Th>
+                    <Table.Th style={{ color: "white", fontSize: dynFontMd, textAlign: "center", width: "35%", padding: "0 3px" }}>Mã vận chuyển</Table.Th>
+                    <Table.Th style={{ color: "white", fontSize: dynFontMd, textAlign: "center", width: "40%", padding: "0 3px" }}>Giá trị</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {col.map((t) => (
+                    <Table.Tr
+                      key={t._id}
+                      style={{ background: "white", height: dynRowH }}
+                    >
+                      <Table.Td style={{ fontWeight: 700, textAlign: "center", fontSize: dynFontSm, padding: "0 3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {t.code}
+                      </Table.Td>
+                      <Table.Td style={{ fontWeight: 700, textAlign: "center", fontSize: dynFontSm, padding: "0 3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {t.vehicleNumber || "—"}
+                      </Table.Td>
+                      <Table.Td style={{ textAlign: "right", padding: "0 4px" }}>
+                        <Text fw={900} c="green.7" fz={dynFontLg} style={{ whiteSpace: "nowrap" }}>
+                          <NumberFormatter
+                            value={(Number(t.status) === 1 && typeof t.reducedRevenueAtPayment === 'number') ? t.reducedRevenueAtPayment : getReducedRevenue(t.revenue, t.groups, reductionRules)}
+                            thousandSeparator="."
+                            decimalSeparator=","
+                            suffix=" đ"
+                          />
                         </Text>
-                      </Box>
-                    </Group>
-                  </Card>
-                ))}
-              </Box>
-            ))}
-          </SimpleGrid>
-        </Box>
-      </Box>
-      
-      <Box style={{ position: "fixed", bottom: 15, left: 30, opacity: 0.5, zIndex: 10 }}>
-        <Text size="sm">Hệ thống quản lý Hải Sản Đông Dương • Cập nhật: {mounted ? new Date().toLocaleTimeString("vi-VN") : "--:--:--"}</Text>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                  {/* Hàng trống lấp đầy đến maxRowsPerCol */}
+                  {Array.from({ length: Math.max(0, maxRowsPerCol - col.length) }).map((_, i) => (
+                    <Table.Tr key={`empty-${i}`} style={{ background: i % 2 === 0 ? "white" : "#fafafa", height: dynRowH }}>
+                      <Table.Td style={{ padding: "0 3px" }}></Table.Td>
+                      <Table.Td style={{ padding: "0 3px" }}></Table.Td>
+                      <Table.Td style={{ padding: "0 3px" }}></Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Box>
+          ))}
+        </SimpleGrid>
       </Box>
     </Box>
   );

@@ -21,7 +21,9 @@ export async function GET() {
           "/admin/settings/sync",
           "/admin/settings/roles"
         ],
-        viewUnpaid: true
+        viewUnpaid: true,
+        viewPaid: true,
+        viewRevenueOverview: true
       },
       {
         name: "Root",
@@ -29,14 +31,18 @@ export async function GET() {
         description: "Quyền root hệ thống.",
         isSystem: true,
         permissions: ["/admin/users", "/admin/revenue", "/admin/revenue-table", "/admin/settings", "/admin/settings/roles"],
-        viewUnpaid: true
+        viewUnpaid: true,
+        viewPaid: true,
+        viewRevenueOverview: true
       },
       {
         name: "Quản lý",
         key: "manager",
         description: "Quản lý nhân sự và xem doanh thu.",
         permissions: ["/admin/users", "/admin/revenue", "/admin/revenue-table"],
-        viewUnpaid: true
+        viewUnpaid: true,
+        viewPaid: true,
+        viewRevenueOverview: true
       },
       {
         name: "Nhân viên",
@@ -75,7 +81,7 @@ export async function GET() {
       await Role.findOneAndUpdate(
         { key: roleData.key },
         { $set: roleData },
-        { upsert: true, new: true }
+        { upsert: true, returnDocument: 'after' }
       );
     }
 
