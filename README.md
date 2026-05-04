@@ -1,67 +1,81 @@
-# Tên Dự Án Của Bạn ✨
+# Hải Sản Đông Dương - Hệ Thống Quản Lý & Doanh Thu ✨
 
-<!-- Thay thế [Tên Dự Án Của Bạn] bằng tên thực tế của ứng dụng -->
-
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Development-yellow.svg)]()
 
 ## 🚀 Giới Thiệu Chung
 
-Đây là một mô tả tổng quan về ứng dụng của bạn. Hãy cho người đọc biết ứng dụng này **giải quyết vấn đề gì** hoặc **cung cấp tính năng gì** một cách ngắn gọn và cuốn hút nhất.
+Đây là hệ thống nội bộ của **Hải Sản Đông Dương**, cung cấp nền tảng quản trị kinh doanh, quản lý doanh thu, đối soát thanh toán và đồng bộ trực tiếp với hệ thống KiotViet. Dự án cung cấp giao diện trực quan cho admin và phân quyền chi tiết cho nhân viên/tài xế.
 
-*Ví dụ: Ứng dụng Quản lý Kho hàng thông minh giúp tối ưu hóa quy trình nhập xuất hàng hóa bằng giao diện trực quan và hệ thống báo cáo tự động.*
+## ✨ Tính Năng Nổi Bật
 
-## ✨ Tính Năng Nổi Bật (Features)
+- **Quản lý Doanh thu & Công nợ:** Thống kê, lọc và theo dõi doanh thu theo thời gian thực.
+- **Phân Quyền Chi Tiết (RBAC):** Quản lý quyền truy cập cho Admin, Staff, và Driver.
+- **Tích Hợp KiotViet:** Tự động đồng bộ đơn hàng và hóa đơn từ KiotViet.
+- **Real-time (Socket.io):** Cập nhật dữ liệu ngay lập tức mà không cần tải lại trang.
+- **Giao Diện Hiện Đại:** Thiết kế responsive hoạt động mượt mà trên cả PC và Mobile (TailwindCSS + Mantine UI).
 
-Liệt kê các tính năng cốt lõi mà người dùng sẽ thấy. Điều này giúp người mới hiểu được "sức mạnh" của dự án chỉ qua vài gạch đầu dòng.
+## 🛠️ Công Nghệ Sử Dụng
 
-- **[Tính năng 1]:** Mô tả ngắn gọn về tính năng này và lợi ích mà nó mang lại.
-- **[Tính năng 2]:** Ví dụ: Hệ thống xác thực người dùng với NextAuth.js, hỗ trợ đăng nhập qua nhiều kênh.
-- **[Tính năng 3]:** Ví dụ: Tích hợp bản đồ trực tiếp, hiển thị vị trí thời gian thực.
-- ...
+- **Frontend:** React.js, Next.js
+- **Styling/UI:** Tailwind CSS v4, Mantine UI v9
+- **Ngôn ngữ:** TypeScript
+- **Backend/Database:** Node.js (Next.js API Routes / Express custom server), MongoDB (Mongoose)
+- **Real-time:** Socket.IO
+- **Xác thực:** NextAuth.js (hỗ trợ JWT và Credentials)
 
-## 🛠️ Công Nghệ Sử Dụng (Tech Stack)
+---
 
-Dự án này được xây dựng trên một bộ công nghệ hiện đại và mạnh mẽ, đảm bảo hiệu suất cao và khả năng mở rộng.
+## ⚙️ Hướng Dẫn Cài Đặt (Local Development)
 
-- **Frontend:** React.js (với Next.js framework)
-- **Styling/UI:** Tailwind CSS và Mantine UI Library
-- **Ngôn ngữ:** TypeScript (Đảm bảo tính an toàn và mạnh mẽ của mã nguồn)
-- **Backend/Database:** Node.js + Express (hoặc Next.js API Routes) kết nối với MongoDB (qua Mongoose)
+### 1. Yêu cầu hệ thống
+- **Node.js:** Phiên bản 18 hoặc 20+.
+- **npm** (hoặc **yarn**, **pnpm**)
+- **MongoDB:** Cài đặt cục bộ (local) hoặc sử dụng MongoDB Atlas.
 
-## ⚙️ Hướng Dẫn Cài Đặt (Setup Guide)
-
-Để chạy được dự án này trên máy local, bạn cần thực hiện các bước sau:
-
-### 1. Điều Kiện Tiên Quyết (Prerequisites)
-Bạn cần cài đặt những thứ sau trên máy tính của mình:
-- **Node.js:** Phiên bản 18 trở lên.
-- **npm** hoặc **yarn** (Trình quản lý gói).
-- **MongoDB:** Đã cài đặt và chạy local, hoặc đã có chuỗi kết nối Atlas.
-
-### 2. Các Bước Thực Hiện
-1. **Clone Repository:**
+### 2. Thiết lập môi trường
+1. Clone dự án về máy:
    ```bash
-   git clone [URL_REPOSITORY_CỦA_BẠN]
-   cd [TÊN_DỰ_ANH]
+   git clone <url-repo-cua-ban>
+   cd haisandongduong
    ```
 
-2. **Cài Đặt Dependencies:**
+2. Cài đặt các gói phụ thuộc (Dependencies):
    ```bash
    npm install
-   # hoặc yarn install
    ```
 
-3. **Thiết Lập Biến Môi Trường:**
-   Tạo một file `.env.local` ở thư mục gốc và thêm các thông tin bí mật:
+3. Copy file môi trường:
+   Tạo file `.env.local` từ file `.env.example` đã cung cấp sẵn:
+   ```bash
+   cp .env.example .env.local
    ```
-   # .env.local
-   MONGODB_URI="mongodb+srv://<TÊN_USER>:<MẬT_KHẨU>@cluster.xyz/ten_database?retryWrites=true&w=majority"
-   NEXTAUTH_SECRET="[YOUR_VERY_LONG_SECRET_KEY]"
-   # ... các biến môi trường khác
+   *Lưu ý: Mở file `.env.local` và cập nhật thông tin MongoDB, KiotViet API, NEXTAUTH_SECRET,... cho phù hợp với môi trường của bạn.*
+
+### 3. Chạy dự án (Development)
+Dự án này sử dụng Socket.IO cùng với Next.js, nên bạn cần khởi chạy thông qua custom server:
+
+```bash
+npm run dev
+# hoặc: npm run dev:socket
+```
+
+Máy chủ sẽ chạy tại: **http://localhost:3000**
+
+---
+
+## 🐳 Hướng Dẫn Triển Khai (Production qua Docker)
+
+Dự án đã được cấu hình sẵn `Dockerfile` và `docker-compose.yml` để bạn có thể dễ dàng chạy trên máy chủ thật (VPS/Server).
+
+1. Tạo cấu hình môi trường Server:
+   Hãy chắc chắn bạn đã có file `.env.server` ở thư mục gốc (hoặc sửa trực tiếp thông tin trong `docker-compose.yml`). Đảm bảo `NEXTAUTH_URL` và `NEXT_PUBLIC_SOCKET_URL` trỏ về domain thật của bạn (VD: `http://techinfom.com/`).
+
+2. Khởi chạy Docker Compose:
+   ```bash
+   docker-compose up -d --build
    ```
-   ***Lưu ý: Tuyệt đối không chia sẻ file .env.local này!***
+   
+3. Ứng dụng sẽ tự động build và expose ở cổng **4000**. Bạn có thể thiết lập Nginx hoặc Cloudflare để trỏ domain của bạn vào cổng này.
 
-## ▶️ Cách Chạy Dự Án (Running The App)
-
-Sau khi cài đặt xong, bạn chỉ cần chạy lệnh sau để khởi động máy chủ phát triển (development server):
+## 📡 Lưu ý về API KiotViet
+Để hệ thống đồng bộ được với KiotViet, bạn phải đảm bảo đã nhập chính xác `KIOTVIET_CLIENT_ID` và `KIOTVIET_CLIENT_SECRET` của cửa hàng vào file biến môi trường.
