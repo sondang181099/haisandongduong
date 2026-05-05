@@ -10,6 +10,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import { IconScreenShare } from "@tabler/icons-react";
 import dayjs from "dayjs";
 import { getReducedRevenue, ReductionRule, type ReductionConfig } from "@/lib/reduction";
+import { usePagePermission } from "@/hooks/usePagePermission";
 
 interface Transaction {
   _id: string;
@@ -23,6 +24,9 @@ interface Transaction {
 }
 
 export default function RevenueTableAdminPage() {
+  // Kiểm tra quyền truy cập trang – nếu không có quyền sẽ tự redirect về /admin
+  const { allowed } = usePagePermission("/admin/revenue-table");
+
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
@@ -110,6 +114,16 @@ export default function RevenueTableAdminPage() {
   };
 
   const isMobile = useMediaQuery("(max-width: 48em)");
+
+  // Trong khi kiểm tra quyền → hiển thị loader, tránh flash nội dung
+  if (allowed === null) {
+    return <Center style={{ minHeight: "60vh" }}><Loader size="md" /></Center>;
+  }
+
+  // Không có quyền (đã redirect) → không render gì cả
+  if (allowed === false) {
+    return null;
+  }
 
   return (
     <Box>

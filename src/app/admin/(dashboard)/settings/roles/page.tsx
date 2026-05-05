@@ -21,6 +21,7 @@ import {
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { notifications } from "@mantine/notifications";
+import { usePagePermission } from "@/hooks/usePagePermission";
 import {
   IconPlus,
   IconEdit,
@@ -56,6 +57,8 @@ interface Role {
 }
 
 export default function RoleSettingsPage() {
+  const { allowed } = usePagePermission("/admin/settings/roles");
+
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -179,6 +182,14 @@ export default function RoleSettingsPage() {
       setLoading(false);
     }
   };
+
+  if (allowed === null) {
+    return <Center style={{ minHeight: "60vh" }}><Loader size="md" /></Center>;
+  }
+
+  if (allowed === false) {
+    return null;
+  }
 
   return (
     <Box>

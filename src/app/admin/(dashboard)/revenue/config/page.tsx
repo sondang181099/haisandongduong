@@ -8,6 +8,8 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { IconPlus, IconTrash } from "@tabler/icons-react";
+import { usePagePermission } from "@/hooks/usePagePermission";
+import { Center, Loader } from "@mantine/core";
 
 // Danh sách các loại xe khớp với màn hình mẫu
 const VEHICLE_TYPES = [
@@ -97,6 +99,7 @@ const toDbFormat = (localObj: RevenueConfig) => {
 };
 
 export default function ConfigPage() {
+  const { allowed } = usePagePermission("/admin/revenue/config");
   const [selectedType, setSelectedType] = useState(VEHICLE_TYPES[0]);
   const [editingConfig, setEditingConfig] = useState<RevenueConfig>(emptyConfig(VEHICLE_TYPES[0]));
   const [loading, setLoading] = useState(true);
@@ -195,6 +198,14 @@ export default function ConfigPage() {
       setSaving(false);
     }
   };
+
+  if (allowed === null) {
+    return <Center style={{ minHeight: "60vh" }}><Loader size="md" /></Center>;
+  }
+
+  if (allowed === false) {
+    return null;
+  }
 
   return (
     <Box p="md" bg="#f4f6f8" style={{ minHeight: "100vh" }}>

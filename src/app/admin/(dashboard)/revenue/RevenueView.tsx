@@ -30,6 +30,7 @@ import { useRouter } from "next/navigation";
 import { calculateProfit } from "@/lib/commission";
 import { VEHICLE_TYPES } from "@/lib/constants";
 import { getReducedRevenue, type ReductionRule, type ReductionConfig } from "@/lib/reduction";
+import { usePagePermission } from "@/hooks/usePagePermission";
 
 interface Transaction {
   _id: string;
@@ -110,6 +111,9 @@ export function RevenueView({ title }: RevenueViewProps) {
   const viewRevenueOverview = (session?.user as any)?.viewRevenueOverview;
   const canDeleteLocal = (session?.user as any)?.canDeleteLocal;
   const isDriverRole = (session?.user as any)?.isDriverRole === true;
+
+  // Kiểm tra quyền truy cập trang – nếu không có quyền sẽ tự redirect về /admin
+  const { allowed } = usePagePermission("/admin/revenue");
   const SHOW_INTERNAL_STORAGE_KEY = "revenue.showInternal";
   const SHOW_ORIGINAL_REVENUE_KEY = "revenue.showOriginalRevenue";
 
@@ -555,6 +559,16 @@ export function RevenueView({ title }: RevenueViewProps) {
 
   const isMobile = useMediaQuery("(max-width: 48em)");
   const [filtersOpen, { toggle: toggleFilters }] = useDisclosure(false);
+
+  // Trong khi kiểm tra quyền → hiển thị loader, tránh flash nội dung
+  if (allowed === null) {
+    return <Center style={{ minHeight: "60vh" }}><Loader size="md" /></Center>;
+  }
+
+  // Không có quyền (đã redirect) → không render gì cả
+  if (allowed === false) {
+    return null;
+  }
 
   return (
     <Box>

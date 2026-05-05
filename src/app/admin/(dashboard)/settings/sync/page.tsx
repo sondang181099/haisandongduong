@@ -4,8 +4,11 @@ import { Box, Title, Card, Text, Stack, Button, Group, Switch, NumberInput, Load
 import { IconRefresh, IconSettings } from "@tabler/icons-react";
 import { notifications } from "@mantine/notifications";
 import { useState, useEffect } from "react";
+import { usePagePermission } from "@/hooks/usePagePermission";
+import { Center, Loader } from "@mantine/core";
 
 export default function SyncSettingsPage() {
+  const { allowed } = usePagePermission("/admin/settings/sync");
   const [interval, setIntervalValue] = useState<number>(10);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -45,6 +48,14 @@ export default function SyncSettingsPage() {
       setSaving(false);
     }
   };
+
+  if (allowed === null) {
+    return <Center style={{ minHeight: "60vh" }}><Loader size="md" /></Center>;
+  }
+
+  if (allowed === false) {
+    return null;
+  }
 
   return (
     <Box style={{ position: "relative" }}>

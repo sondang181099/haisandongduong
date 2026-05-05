@@ -13,6 +13,7 @@ import {
   IconPlus, IconEdit, IconTrash, IconSearch, IconRefresh, IconCheck,
 } from "@tabler/icons-react";
 import dayjs from "dayjs";
+import { usePagePermission } from "@/hooks/usePagePermission";
 
 interface User {
   _id: string;
@@ -44,6 +45,8 @@ const ROLE_MAP: Record<string, string> = {
 const translateRole = (role: string) => ROLE_MAP[role] || role;
 
 export default function UsersPage() {
+  const { allowed } = usePagePermission("/admin/users");
+
   const [users, setUsers] = useState<User[]>([]);
   const [dbRoles, setDbRoles] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -246,6 +249,14 @@ export default function UsersPage() {
 
   const totalPages = Math.ceil(filtered.length / ITEMS_PER_PAGE);
   const paginatedUsers = filtered.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
+
+  if (allowed === null) {
+    return <Center style={{ minHeight: "60vh" }}><Loader size="md" /></Center>;
+  }
+
+  if (allowed === false) {
+    return null;
+  }
 
   return (
     <Box>

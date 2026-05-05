@@ -72,28 +72,30 @@ export function Sidebar({ onMobileClose }: { onMobileClose?: () => void }) {
   const pathname = usePathname();
   const { data: session } = useSession();
   const [permissions, setPermissions] = useState<string[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [loadingPermissions, setLoadingPermissions] = useState(true);
   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const userRole = (session?.user as any)?.role;
 
   useEffect(() => {
+    if (!userRole) {
+      setLoadingPermissions(false);
+      return;
+    }
+
     const fetchPermissions = async () => {
-      if (!userRole) {
-        setLoadingPermissions(false);
-        return;
-      }
-      
       try {
-        const res = await fetch("/api/roles");
+        const res = await fetch("/api/roles/my-permissions");
         const data = await res.json();
-        if (res.ok && data.roles) {
-          const currentRole = data.roles.find((r: any) => r.key === userRole || r.name === userRole);
-          if (currentRole) {
-            setPermissions(currentRole.permissions || []);
-          } else if (userRole === "admin") {
-            // Fallback cho admin tối cao nếu chưa có trong DB
+        if (res.ok) {
+          if (data.isAdmin) {
+            // Admin tối cao thấy tất cả menu
+            setIsAdmin(true);
             setPermissions(navItems.flatMap(item => [item.href, ...(item.children?.map(c => c.href) || [])]));
+          } else {
+            setIsAdmin(false);
+            setPermissions(data.permissions || []);
           }
         }
       } catch (error) {
@@ -106,23 +108,25 @@ export function Sidebar({ onMobileClose }: { onMobileClose?: () => void }) {
     fetchPermissions();
   }, [userRole]);
 
+
   const renderNavItem = (item: any) => {
     // Kiểm tra quyền truy cập dựa trên href
-    const hasPermission = permissions.some(p => p === item.href || (item.children && item.children.some((c: any) => p === c.href)));
-    
-    // Luôn cho phép admin tối cao xem mọi thứ nếu permissions chưa tải xong hoặc rỗng
-    if (!hasPermission && userRole !== "admin") {
+    const hasPermission = isAdmin || permissions.includes(item.href) ||
+      (item.children && item.children.some((c: any) => permissions.includes(c.href)));
+
+    // Không có quyền → ẩn menu
+    if (!hasPermission) {
       return null;
     }
 
     const hasChildren = item.children && item.children.length > 0;
-    
-    // Lọc con dựa trên quyền
-    const visibleChildren = hasChildren 
-      ? item.children.filter((child: any) => permissions.includes(child.href) || userRole === "admin")
+
+    // Lọc menu con dựa trên quyền
+    const visibleChildren = hasChildren
+      ? item.children.filter((child: any) => isAdmin || permissions.includes(child.href))
       : [];
 
-    if (hasChildren && visibleChildren.length === 0 && userRole !== "admin") {
+    if (hasChildren && visibleChildren.length === 0) {
       return null;
     }
 
@@ -180,7 +184,7 @@ export function Sidebar({ onMobileClose }: { onMobileClose?: () => void }) {
     );
   };
 
-  if (loadingPermissions && userRole !== "admin") {
+  if (loadingPermissions) {
     return (
       <Box style={{ width: "100%", height: "100%", background: "white" }}>
         <Center h="100%"><Loader size="sm" /></Center>
