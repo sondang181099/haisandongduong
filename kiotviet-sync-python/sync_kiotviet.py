@@ -11,7 +11,7 @@ import time
 import re
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pymongo import MongoClient, UpdateOne
+from pymongo import MongoClient, UpdateOne, InsertOne
 from dotenv import load_dotenv
 import pytz
 
@@ -30,7 +30,7 @@ else:
 MONGODB_URI = os.getenv("MONGODB_URI")
 CLIENT_ID = os.getenv("KIOTVIET_CLIENT_ID")
 CLIENT_SECRET = os.getenv("KIOTVIET_CLIENT_SECRET")
-RETAILER_CODE = "haisandongduog"
+RETAILER_CODE = os.getenv("KIOTVIET_RETAILER_CODE", "haisandongduog")
 TZ = pytz.timezone("Asia/Ho_Chi_Minh")
 
 if not all([MONGODB_URI, CLIENT_ID, CLIENT_SECRET]):
@@ -53,6 +53,40 @@ client = MongoClient(MONGODB_URI, tz_aware=True)
 db = client.get_database()
 transactions_col = db["transactions"]
 kiotviets_col = db["kiotviets"]
+
+def clean_plate(plate):
+    """Chuẩn hóa biển số xe để so sánh (viết hoa, loại bỏ ký tự đặc biệt)."""
+    if not plate:
+        return ""
+    return re.sub(r'[^A-Z0-9]', '', plate.strip().upper())
+
+def should_match_transaction(tx_plate, new_plate, customer_code):
+    """
+    Quyết định xem giao dịch hiện tại (tx_plate) và biển số mới (new_plate) có khớp nhau hay không.
+    - Đối với xe đoàn (XT/XD), luôn cho phép khớp cùng mã đoàn trong ngày để gộp chung dữ liệu.
+    - Các trường hợp khác: khớp theo biển số hoặc mặc định.
+    """
+    if customer_code.startswith("XT") or customer_code.startswith("XD"):
+        return True
+
+    tx_clean = clean_plate(tx_plate)
+    new_clean = clean_plate(new_plate)
+    
+    # 1. Trùng khớp hoàn toàn biển số đã làm sạch
+    if tx_clean == new_clean:
+        return True
+        
+    # 2. Giao dịch hiện tại chưa có biển số thật (trống, Khách lẻ, hoặc trùng với mã đoàn)
+    if tx_clean in ("", "KHACHLE", clean_plate(customer_code)):
+        return True
+        
+    # 3. Giao dịch hiện tại có biển số mặc định của mã reset
+    if customer_code.startswith("XD") and tx_clean == clean_plate(f"Xe điện {customer_code[2:]}"):
+        return True
+    if customer_code.startswith("XT") and tx_clean == clean_plate(f"Xe to {customer_code[2:]}"):
+        return True
+        
+    return False
 
 def parse_date(date_str):
     """Parse chuỗi ngày từ KiotViet an toàn với múi giờ."""
@@ -195,31 +229,61 @@ def sync_customers(access_token, from_date):
 
         brands = [g.strip() for g in final_groups.split(",") if g.strip()]
         
-        # Match Query
-        match_query = {
+        # Tìm các transaction tiềm năng trong ngày có cùng mã hoặc customerId
+        potential_txs = list(transactions_col.find({
             "arrivalDate": {"$gte": start_of_day, "$lte": end_of_day},
             "$or": [
                 {"customerId": c.get("id")},
                 {"code": {"$regex": f"^{re.escape(code)}$", "$options": "i"}}
             ]
-        }
-        
-        update_doc = {
-            "$setOnInsert": {
-                "revenue": 0, "profit": 0, "status": 0, 
-                "paymentMethod": 0, "isRevenueChanged": False,
-                "customerModifiedDate": arrival_date, "notes": [],
-                "extraFee": 0, "extraRevenue": 0,
-                "arrivalDate": arrival_date, "paidBy": None, "updatedBy": None,
-                "isCustomerDeleted": False
-            },
-            "$set": {
-                "code": code, "licensePlate": final_plate, "vehicleNumber": final_plate,
-                "groups": final_groups, "brands": brands, "customerId": c.get("id"),
-                "syncSource": "KiotViet", "updatedAt": datetime.now(pytz.utc)
+        }))
+
+        existing_tx = None
+        for tx in potential_txs:
+            tx_plate = tx.get("licensePlate") or tx.get("vehicleNumber") or ""
+            if should_match_transaction(tx_plate, final_plate, code):
+                existing_tx = tx
+                break
+
+        if existing_tx:
+            update_query = {"_id": existing_tx["_id"]}
+            update_doc = {
+                "$set": {
+                    "code": code, "licensePlate": final_plate, "vehicleNumber": final_plate,
+                    "groups": final_groups, "brands": brands, "customerId": c.get("id"),
+                    "isCustomerDeleted": False,
+                    "syncSource": "KiotViet", "updatedAt": datetime.now(pytz.utc)
+                }
             }
-        }
-        updates.append(UpdateOne(match_query, update_doc, upsert=True))
+            updates.append(UpdateOne(update_query, update_doc))
+        else:
+            new_doc = {
+                "code": code,
+                "licensePlate": final_plate,
+                "vehicleNumber": final_plate,
+                "groups": final_groups,
+                "brands": brands,
+                "customerId": c.get("id"),
+                "revenue": 0,
+                "profit": 0,
+                "status": 0,
+                "paymentMethod": 0,
+                "isRevenueChanged": False,
+                "customerModifiedDate": arrival_date,
+                "notes": [],
+                "extraFee": 0,
+                "extraRevenue": 0,
+                "arrivalDate": arrival_date,
+                "paidBy": None,
+                "updatedBy": None,
+                "isCustomerDeleted": False,
+                "isFrozen": False,
+                "frozenRevenue": 0,
+                "syncSource": "KiotViet",
+                "createdAt": datetime.now(pytz.utc),
+                "updatedAt": datetime.now(pytz.utc)
+            }
+            updates.append(InsertOne(new_doc))
         
     if updates:
         transactions_col.bulk_write(updates)
@@ -229,7 +293,13 @@ def sync_customers(access_token, from_date):
 def process_invoices_to_transactions(invoices, access_token):
     """Gom nhóm hóa đơn và cập nhật doanh thu."""
     if not invoices:
-        return 0
+        return 0, {}
+        
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Retailer": RETAILER_CODE,
+        "User-Agent": "haisandongduong-python/1.0"
+    }
         
     # Bước 0: Lấy nhanh thông tin nhóm của các mã khách hàng trong danh sách hóa đơn
     codes = list(set([inv.get("customerCode") for inv in invoices if inv.get("customerCode")]))
@@ -245,13 +315,76 @@ def process_invoices_to_transactions(invoices, access_token):
             if c_code and c_code not in code_to_groups:
                 code_to_groups[c_code] = r.get("groups", "")
 
+    # Bước 1: Quyết định mã khách hàng "tốt nhất" cho từng hóa đơn (tránh trùng lặp doanh thu)
+    # Ưu tiên: Xe đoàn (XT/XD) > Khách có mã khác > Khách lẻ (388)
+    invoice_to_best_code = {}
+    for inv in invoices:
+        inv_code = inv.get("code")
+        raw_code = inv.get("customerCode") or "Khách lẻ"
+        
+        # Chuẩn hóa mã khách hàng (bỏ hậu tố {DEL}...)
+        if raw_code == "Khách lẻ" or "khách lẻ" in raw_code.lower():
+            customer_code = "Khách lẻ"
+        elif "DEL" in raw_code.upper():
+            customer_code = raw_code.strip()
+        else:
+            customer_code = raw_code.split("{")[0].strip()
+        
+        if inv_code not in invoice_to_best_code:
+            invoice_to_best_code[inv_code] = customer_code
+        else:
+            curr_best = invoice_to_best_code[inv_code]
+            def get_score(c):
+                if c.startswith("XT") or c.startswith("XD"): return 100
+                if c.isdigit(): return 75 # Các mã số nội bộ (388, 803...) ưu tiên hơn khách vãng lai
+                if c != "Khách lẻ": return 50
+                return 0
+            
+            if get_score(customer_code) > get_score(curr_best):
+                invoice_to_best_code[inv_code] = customer_code
+
+    # Bước 1.5: Lấy nhanh thông tin biển số xe lịch sử đã được lưu cho các hóa đơn này (nếu có)
+    # Để tránh việc hóa đơn bị cuốn theo tên mới của KiotViet khi sửa tên khách hàng
+    invoice_to_existing_plate = {}
+    if invoices:
+        batch_codes = [inv.get("code") for inv in invoices if inv.get("code")]
+        cursor = transactions_col.find(
+            {"childInvoices.code": {"$in": batch_codes}},
+            {"childInvoices.code": 1, "licensePlate": 1, "vehicleNumber": 1, "code": 1}
+        )
+        for tx in cursor:
+            tx_plate = tx.get("licensePlate") or tx.get("vehicleNumber") or ""
+            tx_clean = clean_plate(tx_plate)
+            c_code = tx.get("code", "")
+            
+            is_default = tx_clean in ("", "KHACHLE", clean_plate(c_code))
+            if not is_default:
+                if c_code.startswith("XD") and tx_clean == clean_plate(f"Xe điện {c_code[2:]}"):
+                    is_default = True
+                elif c_code.startswith("XT") and tx_clean == clean_plate(f"Xe to {c_code[2:]}"):
+                    is_default = True
+            
+            if not is_default:
+                for ci in tx.get("childInvoices", []):
+                    ci_code = ci.get("code")
+                    if ci_code in batch_codes:
+                        invoice_to_existing_plate[ci_code] = tx_plate
+
     groups = {}
     for inv in invoices:
         raw_code = inv.get("customerCode") or "Khách lẻ"
         if raw_code == "Khách lẻ" or "khách lẻ" in raw_code.lower():
             continue
             
-        customer_code = raw_code.split("{")[0].strip()
+        if "DEL" in raw_code.upper():
+            customer_code = raw_code.strip()
+        else:
+            customer_code = raw_code.split("{")[0].strip()
+        
+        # CHỈ xử lý hóa đơn này cho mã khách hàng "tốt nhất" đã chọn ở trên
+        if invoice_to_best_code.get(inv.get("code")) != customer_code:
+            continue
+
         inv_date = parse_date(inv.get("createdDate")) or datetime.now(pytz.utc)
         date_key = inv_date.astimezone(TZ).strftime("%Y-%m-%d")
         
@@ -259,20 +392,25 @@ def process_invoices_to_transactions(invoices, access_token):
         # Nếu XD/XT thuộc nhóm có tên thực sự ("Xe điện", "45 chỗ"...) → gộp theo ngày như đoàn thường
         existing_groups = code_to_groups.get(customer_code, "")
         is_actually_retail = not existing_groups or "Khách lẻ" in existing_groups or "Nội bộ" in existing_groups
-        is_vehicle_reset = (customer_code.startswith("XT") or customer_code.startswith("XD"))
+        is_vehicle_reset = (customer_code.startswith("XT") or customer_code.startswith("XD") or customer_code.isdigit())
         
-        # Key: CustomerCode_Date
+        # Lấy biển số xe và chuẩn hóa
+        inv_plate = invoice_to_existing_plate.get(inv.get("code")) or inv.get("customerName") or customer_code
+        inv_plate_clean = clean_plate(inv_plate)
+        
+        # Key: CustomerCode_Date_Plate
         # XD/XT là retail (Khách lẻ./Nội bộ) → tách riêng mỗi hóa đơn
-        # XD/XT là đoàn thực (Xe điện, 45 chỗ...) → gộp chung theo ngày
+        # XD/XT là đoàn thực (Xe điện, 45 chỗ...) → gộp chung theo ngày của mã đoàn đó
         if is_vehicle_reset and is_actually_retail:
             group_key = f"{customer_code}_{date_key}_{inv.get('code')}"
         else:
-            group_key = f"{customer_code}_{date_key}"
+            group_key = f"{customer_code}_{date_key}_{inv_plate_clean}"
         
         if group_key not in groups:
             groups[group_key] = {
                 "customerCode": customer_code,
                 "dateKey": date_key,
+                "plate": inv_plate,
                 "invoices": [],
                 "invoiceCodes": [],
                 "cancelledCodes": []
@@ -350,6 +488,8 @@ def process_invoices_to_transactions(invoices, access_token):
             continue
             
         code_str = g["customerCode"]
+        group_plate = g["plate"]
+        group_plate_clean = clean_plate(group_plate)
         
         # Lấy lại thông tin nhóm hiện tại của mã này để quyết định match_query
         current_groups = code_to_groups.get(code_str, "")
@@ -358,32 +498,42 @@ def process_invoices_to_transactions(invoices, access_token):
         is_retail_logic = (code_str.startswith("XT") or code_str.startswith("XD")) and \
                           (not current_groups or "Khách lẻ" in current_groups or "Nội bộ" in current_groups)
         
+        existing_tx = None
         if is_retail_logic:
-            # Khách vãng lai: match chính xác theo invoiceCode từng cái riêng
+            # Khách vãng lai: match chính xác theo invoiceCode từng cái riêng và phải khớp code_str
             match_query = {
+                "code": {"$regex": f"^{re.escape(code_str)}$", "$options": "i"},
                 "arrivalDate": {"$gte": start_of_day, "$lte": end_of_day},
                 "invoiceCode": {"$regex": f"\\b{re.escape(invoice_codes[0])}\\b"}
             }
+            existing_tx = transactions_col.find_one(match_query, sort=[("updatedAt", -1)])
         else:
-            # Trường hợp Xe đoàn (hoặc mã XT/XD nhưng có nhóm xịn): Gom nhóm theo ngày
-            invoice_match_regex = "|".join([f"\\b{re.escape(c)}\\b" for c in invoice_codes])
-            match_query = {
+            # Trường hợp Xe đoàn: tìm tất cả transaction cùng mã đoàn, cùng ngày, chưa thanh toán (status = 0)
+            potential_txs = list(transactions_col.find({
+                "code": {"$regex": f"^{re.escape(code_str)}$", "$options": "i"},
                 "arrivalDate": {"$gte": start_of_day, "$lte": end_of_day},
-                "$or": [
-                    {"code": {"$regex": f"^{re.escape(code_str)}$", "$options": "i"}},
-                    {"invoiceCode": {"$regex": invoice_match_regex}}
-                ]
-            }
-        
-        existing_tx = transactions_col.find_one(match_query, sort=[("updatedAt", -1)])
+                "status": 0
+            }))
+            
+            for tx in potential_txs:
+                tx_plate = tx.get("licensePlate") or tx.get("vehicleNumber") or ""
+                if should_match_transaction(tx_plate, group_plate, code_str):
+                    existing_tx = tx
+                    break
         
         # Logic gộp và xử lý hóa đơn con...
         # (Để đơn giản và hiệu quả, ta sẽ cập nhật các hóa đơn và tính doanh thu tổng)
         
         child_invoices = []
         if existing_tx and "childInvoices" in existing_tx:
-            # Lọc bỏ hóa đơn bị hủy trong danh sách cũ
-            child_invoices = [ci for ci in existing_tx["childInvoices"] if ci["code"] not in g["cancelledCodes"]]
+            # Lọc bỏ: 
+            # 1. Hóa đơn bị hủy
+            # 2. Hóa đơn hiện đã thuộc về một mã khách hàng khác (theo invoice_to_best_code)
+            child_invoices = [
+                ci for ci in existing_tx["childInvoices"] 
+                if ci["code"] not in g["cancelledCodes"] and 
+                invoice_to_best_code.get(ci["code"], g["customerCode"]) == g["customerCode"]
+            ]
             
         # Thêm/Cập nhật hóa đơn mới
         for inv in g["invoices"]:
@@ -415,31 +565,58 @@ def process_invoices_to_transactions(invoices, access_token):
         latest_inv = g["invoices"][-1] if g["invoices"] else None
         
         # Logic quy đổi chỉ áp dụng nếu KHÔNG có thông tin nhóm xịn từ trước
-        final_plate = code_str
+        final_plate = group_plate
         final_groups = "Khách lẻ."
         
         # Nếu đã có record cũ, ưu tiên dùng lại nhóm/biển số của record cũ (tránh bị reset về "Khách lẻ.")
         if existing_tx:
             final_plate = existing_tx.get("licensePlate") or existing_tx.get("vehicleNumber") or final_plate
             final_groups = existing_tx.get("groups") or final_groups
-        
-        # Chỉ áp dụng logic "Xe to/Xe điện" nếu nhóm hiện tại vẫn đang là khách lẻ/trống
-        if is_retail_logic:
-            if not final_groups or "Khách lẻ" in final_groups or "Nội bộ" in final_groups:
-                if code_str.isdigit():
+        else:
+            # Logic quy đổi biển số/nhóm cho các mã đặc biệt (XT/XD/Số) chỉ áp dụng khi tạo mới
+            final_groups = code_to_groups.get(code_str, "Khách lẻ.")
+            
+            # Tra cứu trực tiếp KiotViet API nếu không tìm thấy trong DB nội bộ nhằm tránh trễ hiển thị 2 phút
+            if final_groups == "Khách lẻ.":
+                try:
+                    cust_url = f"https://public.kiotapi.com/customers?code={code_str}&includeCustomerGroup=true"
+                    cust_res = http_session.get(cust_url, headers=headers)
+                    if cust_res.ok:
+                        cust_data = cust_res.json().get("data", [])
+                        if cust_data:
+                            cust_info = cust_data[0]
+                            final_groups = cust_info.get("groups") or "Khách lẻ."
+                            final_plate = cust_info.get("licensePlate") or cust_info.get("name") or final_plate
+                except Exception as e:
+                    print(f"Error querying KiotViet customer lookup for {code_str}: {e}")
+
+            if code_str.isdigit():
+                # Luôn đảm bảo các mã số nội bộ (388, 803...) thuộc nhóm Nội bộ
+                if not final_groups or "Khách lẻ" in final_groups or "Nội bộ" in final_groups:
                     final_groups = "Nội bộ"
-                elif code_str.startswith("XT"):
-                    final_plate = f"Xe to {code_str[2:]}"
-                    final_groups = "Khách lẻ."
-                elif code_str.startswith("XD"):
-                    final_plate = f"Xe điện {code_str[2:]}"
-                    final_groups = "Khách lẻ."
+            elif is_retail_logic:
+                # Chỉ áp dụng logic "Xe to/Xe điện" nếu nhóm hiện tại vẫn đang là khách lẻ/trống
+                if not final_groups or "Khách lẻ" in final_groups or "Nội bộ" in final_groups:
+                    if code_str.startswith("XT"):
+                        final_plate = f"Xe to {code_str[2:]}"
+                        final_groups = "Khách lẻ."
+                    elif code_str.startswith("XD"):
+                        final_plate = f"Xe điện {code_str[2:]}"
+                        final_groups = "Khách lẻ."
+
+        brands = [group_str.strip() for group_str in final_groups.split(",") if group_str.strip()]
         
         update_set = {
+            "code": g["customerCode"],
+            "licensePlate": final_plate,
+            "vehicleNumber": final_plate,
+            "groups": final_groups,
+            "brands": brands,
             "revenue": total_revenue,
             "invoiceCode": final_invoice_codes,
             "childInvoices": child_invoices,
             "arrivalDate": g.get("arrivalDate", start_of_day),  # luôn cập nhật nếu có HD sớm hơn
+            "isCustomerDeleted": False,
             "syncSource": "KiotViet",
             "updatedAt": datetime.now(pytz.utc)
         }
@@ -447,29 +624,54 @@ def process_invoices_to_transactions(invoices, access_token):
         if latest_inv:
             update_set["sellerName"] = latest_inv.get("soldByName", "Hệ thống")
             
-        transactions_col.update_one(
-            match_query,
-            {
-                "$set": update_set, 
-                "$setOnInsert": {
-                    "code": g["customerCode"],
-                    "status": 0, 
-                    "paymentMethod": 0, 
-                    "notes": [], 
-                    "extraFee": 0, 
-                    "extraRevenue": 0,
-                    "licensePlate": final_plate,
-                    "vehicleNumber": final_plate,
-                    "groups": final_groups,
-                    "brands": [g.strip() for g in final_groups.split(",") if g.strip()]
-                }
-            },
-            upsert=True
-        )
+        if existing_tx:
+            transactions_col.update_one(
+                {"_id": existing_tx["_id"]},
+                {"$set": update_set}
+            )
+            existing_tx_id = existing_tx["_id"]
+        else:
+            new_doc = {
+                "code": g["customerCode"],
+                "status": 0, 
+                "paymentMethod": 0, 
+                "notes": [], 
+                "extraFee": 0, 
+                "extraRevenue": 0,
+                "licensePlate": final_plate,
+                "vehicleNumber": final_plate,
+                "groups": final_groups,
+                "brands": brands,
+                "createdAt": datetime.now(pytz.utc)
+            }
+            new_doc.update(update_set)
+            insert_res = transactions_col.insert_one(new_doc)
+            existing_tx_id = insert_res.inserted_id
+
+        # Rút các hóa đơn này ra khỏi các giao dịch khác (nếu có) trên cùng ngày để tránh trùng lặp
+        if invoice_codes:
+            other_txs = list(transactions_col.find({
+                "_id": {"$ne": existing_tx_id},
+                "arrivalDate": {"$gte": start_of_day, "$lte": end_of_day},
+                "childInvoices.code": {"$in": invoice_codes}
+            }))
+            for otx in other_txs:
+                otx_childs = [ci for ci in otx.get("childInvoices", []) if ci["code"] not in invoice_codes]
+                otx_revenue = sum(ci["total"] for ci in otx_childs)
+                otx_invoice_codes = ", ".join([ci["code"] for ci in otx_childs])
+                transactions_col.update_one(
+                    {"_id": otx["_id"]},
+                    {"$set": {
+                        "childInvoices": otx_childs,
+                        "revenue": otx_revenue,
+                        "invoiceCode": otx_invoice_codes,
+                        "updatedAt": datetime.now(pytz.utc)
+                    }}
+                )
 
         units_updated += 1
         
-    return units_updated
+    return units_updated, invoice_to_best_code
 
 def verify_customer_existence(access_token, customer_ids):
     """Kiểm tra xem danh sách ID khách hàng có còn tồn tại trên KiotViet hay không."""
@@ -505,28 +707,31 @@ def verify_customer_existence(access_token, customer_ids):
                 
     return deleted_ids
 
-def merge_duplicate_transactions(from_date_dt):
+def merge_duplicate_transactions(from_date_dt, invoice_to_best_code):
     """
     Sau khi đồng bộ xong, gộp các records trùng mã cùng ngày về 1 bản ghi chính.
     Xảy ra khi: hóa đơn được xử lý trước thông tin nhóm khách hàng sẵn sàng trong DB.
     Lưu ý: KHÔNG gộp nếu records có customerId khác nhau (đó là 2 chuyến khác nhau).
+    Sử dụng invoice_to_best_code để loại bỏ các hóa đơn không còn thuộc về mã này.
     """
     start_utc = from_date_dt.astimezone(pytz.utc)
     cursor = transactions_col.find(
         {"arrivalDate": {"$gte": start_utc}},
         {"code": 1, "arrivalDate": 1, "groups": 1, "childInvoices": 1, "customerId": 1,
-         "revenue": 1, "invoiceCode": 1, "updatedAt": 1}
+         "revenue": 1, "invoiceCode": 1, "licensePlate": 1, "vehicleNumber": 1, "updatedAt": 1}
     )
     
-    # Nhóm các records theo (code, date_key)
+    # Nhóm các records theo (code, date_key, plate_clean)
     by_code_date = {}
     for r in cursor:
         code = r.get("code", "")
         arr = r.get("arrivalDate")
+        plate = r.get("licensePlate") or r.get("vehicleNumber") or ""
         if not code or not arr:
             continue
         date_key = arr.astimezone(TZ).strftime("%Y-%m-%d")
-        key = f"{code}_{date_key}"
+        plate_clean = clean_plate(plate)
+        key = f"{code}_{date_key}_{plate_clean}"
         if key not in by_code_date:
             by_code_date[key] = []
         by_code_date[key].append(r)
@@ -581,12 +786,20 @@ def merge_duplicate_transactions(from_date_dt):
             primary = sub_group[0]
             duplicates = sub_group[1:]
             
-            # Gom tất cả childInvoices không trùng vào primary
-            merged_childs = {ci["code"]: ci for ci in primary.get("childInvoices", [])}
+            # Gom tất cả childInvoices không trùng vào primary, đồng thời lọc theo invoice_to_best_code
+            code_str = primary.get("code")
+            merged_childs = {}
+            # Kiểm tra invoices từ record chính
+            for ci in primary.get("childInvoices", []):
+                if invoice_to_best_code.get(ci["code"], code_str) == code_str:
+                    merged_childs[ci["code"]] = ci
+            
+            # Kiểm tra invoices từ các record trùng lặp
             for dup in duplicates:
                 for ci in dup.get("childInvoices", []):
                     if ci["code"] not in merged_childs:
-                        merged_childs[ci["code"]] = ci
+                        if invoice_to_best_code.get(ci["code"], code_str) == code_str:
+                            merged_childs[ci["code"]] = ci
             
             final_childs = sorted(merged_childs.values(), key=lambda x: x.get("purchaseDate") or datetime.min)
             final_revenue = sum(ci.get("total", 0) for ci in final_childs)
@@ -640,11 +853,11 @@ def run_sync(range_mode="yesterday"):
         # 4. Invoice Sync
         url_invoices = f"https://public.kiotapi.com/invoices?orderBy=createdDate&orderDirection=Desc&lastModifiedFrom={from_date}&includeInvoiceDetails=true"
         invoices = fetch_all_pages(url_invoices, token)
-        invoices_processed = process_invoices_to_transactions(invoices, token)
-        print(f"-> Invoices processed: {len(invoices)} (Groups updated: {invoices_processed})")
+        units_updated, invoice_to_best_code = process_invoices_to_transactions(invoices, token)
+        print(f"-> Invoices processed: {len(invoices)} (Groups updated: {units_updated})")
         
         # 5. Merge duplicates (records bị tách nhầm do đồng bộ không theo thứ tự)
-        merged = merge_duplicate_transactions(from_date_dt)
+        merged = merge_duplicate_transactions(from_date_dt, invoice_to_best_code)
         if merged:
             print(f"-> Merged {merged} duplicate group(s)")
         

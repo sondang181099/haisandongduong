@@ -12,7 +12,7 @@ import { emitRevenueUpdate } from "./socket-server";
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
-const RETAILER_CODE = "haisandongduog";
+const RETAILER_CODE = process.env.KIOTVIET_RETAILER_CODE || "haisandongduog";
 const escapeRegExp = (string: string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
@@ -44,9 +44,87 @@ export async function deleteKiotVietCustomer(customerId: string | number): Promi
  * @deprecated Hàm này đã được thay thế bằng script Python (sync_kiotviet.py) để tối ưu hiệu suất.
  * Chỉ nên dùng cho các tác vụ tra cứu nhỏ lẻ nếu cần.
  */
+const cleanPlate = (plate: string) => {
+  if (!plate) return "";
+  return plate.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+};
+
+function shouldMatchTransaction(txPlate: string, newPlate: string, customerCode: string): boolean {
+  if (customerCode.startsWith("XT") || customerCode.startsWith("XD")) {
+    return true;
+  }
+
+  const txClean = cleanPlate(txPlate);
+  const newClean = cleanPlate(newPlate);
+  
+  if (txClean === newClean) {
+    return true;
+  }
+  
+  if (txClean === "" || txClean === "KHACHLE" || txClean === cleanPlate(customerCode)) {
+    return true;
+  }
+  
+  if (customerCode.startsWith("XD") && txClean === cleanPlate(`Xe điện ${customerCode.slice(2)}`)) {
+    return true;
+  }
+  if (customerCode.startsWith("XT") && txClean === cleanPlate(`Xe to ${customerCode.slice(2)}`)) {
+    return true;
+  }
+  
+  return false;
+}
+
 export async function processInvoicesToTransactions(invoices: any[], accessToken: string) {
 
   if (!invoices || invoices.length === 0) return 0;
+
+  // Bước 0: Lấy nhanh thông tin nhóm của các mã khách hàng trong danh sách hóa đơn
+  const codes = Array.from(new Set(invoices.map(inv => inv.customerCode).filter(Boolean)));
+  const codeToGroups: Record<string, string> = {};
+  if (codes.length > 0) {
+    const records = await Transaction.find(
+      { code: { $in: codes } },
+      { code: 1, groups: 1, updatedAt: 1 }
+    ).sort({ updatedAt: -1 }).lean();
+    for (const r of records) {
+      if (r.code && !codeToGroups[r.code]) {
+        codeToGroups[r.code] = r.groups || "";
+      }
+    }
+  }
+  // Bước 0.5: Lấy nhanh thông tin biển số xe lịch sử đã được lưu cho các hóa đơn này (nếu có)
+  const invoiceToExistingPlate: Record<string, string> = {};
+  const batchCodes = invoices.map(inv => inv.code).filter(Boolean);
+  if (batchCodes.length > 0) {
+    const historicalTxs = await Transaction.find(
+      { "childInvoices.code": { $in: batchCodes } },
+      { "childInvoices.code": 1, licensePlate: 1, vehicleNumber: 1, code: 1 }
+    ).lean();
+
+    for (const tx of historicalTxs) {
+      const txPlate = tx.licensePlate || tx.vehicleNumber || "";
+      const txClean = cleanPlate(txPlate);
+      const cCode = tx.code || "";
+
+      let isDefault = txClean === "" || txClean === "KHACHLE" || txClean === cleanPlate(cCode);
+      if (!isDefault) {
+        if (cCode.startsWith("XD") && txClean === cleanPlate(`Xe điện ${cCode.slice(2)}`)) {
+          isDefault = true;
+        } else if (cCode.startsWith("XT") && txClean === cleanPlate(`Xe to ${cCode.slice(2)}`)) {
+          isDefault = true;
+        }
+      }
+
+      if (!isDefault) {
+        for (const ci of (tx.childInvoices || [])) {
+          if (ci.code && batchCodes.includes(ci.code)) {
+            invoiceToExistingPlate[ci.code] = txPlate;
+          }
+        }
+      }
+    }
+  }
 
   // 1. Gom nhóm các hóa đơn theo khách hàng và ngày
   const groupsMap: Record<string, any> = {};
@@ -57,15 +135,29 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
       // Optimization: Bỏ qua hóa đơn khách lẻ vãng lai không có mã đoàn
       continue;
     }
-    const customerCode = rawCode.split("{")[0].trim();
+    const customerCode = rawCode.toUpperCase().includes("DEL") ? rawCode.trim() : rawCode.split("{")[0].trim();
     
     const dateKey = dayjs.tz(inv.createdDate, "Asia/Ho_Chi_Minh").format("YYYY-MM-DD");
-    const groupKey = customerCode === "Khách lẻ" ? `${customerCode}_${dateKey}_${inv.code}` : `${customerCode}_${dateKey}`;
+    
+    const invPlate = invoiceToExistingPlate[inv.code] || inv.customerName || customerCode;
+    const invPlateClean = cleanPlate(invPlate);
+
+    const existingGroups = codeToGroups[customerCode] || "";
+    const isActuallyRetail = !existingGroups || existingGroups.includes("Khách lẻ") || existingGroups.includes("Nội bộ");
+    const isVehicleReset = customerCode.startsWith("XT") || customerCode.startsWith("XD") || /^\d+$/.test(customerCode);
+
+    let groupKey: string;
+    if (isVehicleReset && isActuallyRetail) {
+      groupKey = `${customerCode}_${dateKey}_${inv.code}`;
+    } else {
+      groupKey = `${customerCode}_${dateKey}_${invPlateClean}`;
+    }
 
     if (!groupsMap[groupKey]) {
       groupsMap[groupKey] = {
         customerCode,
         dateKey,
+        plate: invPlate,
         invoices: [],
         totalRevenue: 0,
         totalProfit: 0,
@@ -96,6 +188,7 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
     const chunk = groupKeys.slice(i, i + invoiceDbConcurrency);
     await Promise.all(chunk.map(async (key) => {
       const group = groupsMap[key];
+      const groupPlateClean = cleanPlate(group.plate);
     
       const sortedInvoices = [...group.invoices].sort((a: any, b: any) => 
         new Date(a.createdDate).getTime() - new Date(b.createdDate).getTime()
@@ -106,24 +199,24 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
       const endOfDay = dayjs.tz(group.dateKey, "Asia/Ho_Chi_Minh").endOf("day").toDate();
 
       let customerGroups = "Khách lẻ."; 
-      let licensePlate = latestInv?.customerName || group.customerCode || "Khách lẻ.";
+      let licensePlate = latestInv?.customerName || group.plate || "Khách lẻ.";
       let customerId = latestInv?.customerId || null;
       let isCustomerDeleted = latestInv?.customerCode?.includes("{DEL}") || false;
       
       if (group.customerCode && group.customerCode !== "Khách lẻ") {
         try {
-          const cleanCode = group.customerCode.split("{")[0];
+          const cleanCode = group.customerCode.toUpperCase().includes("DEL") ? group.customerCode.trim() : group.customerCode.split("{")[0];
           const localRecord = await Transaction.findOne({ 
             code: { $regex: `^${escapeRegExp(cleanCode)}$`, $options: "i" } 
           }).sort({ updatedAt: -1 }).lean();
           
-          if (localRecord && localRecord.groups) {
+          if (localRecord && localRecord.groups && !localRecord.isCustomerDeleted) {
             licensePlate = localRecord.licensePlate || licensePlate;
             customerGroups = localRecord.groups || customerGroups;
             customerId = localRecord.customerId || customerId;
-            isCustomerDeleted = localRecord.isCustomerDeleted || false;
+            isCustomerDeleted = false;
           } else {
-            console.log(`[Sync] Local record not found for ${cleanCode}, fetching from KiotViet...`);
+            console.log(`[Sync] Local record not found or was deleted for ${cleanCode}, fetching from KiotViet...`);
             const searchParam = `code=${encodeURIComponent(cleanCode)}&includeCustomerGroup=true`;
             const custRes = await fetch(`https://public.kiotapi.com/customers?${searchParam}`, {
               headers: {
@@ -170,21 +263,36 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
           mainProducts: productNames
         };
       });
-      const invoiceMatchQuery = {
-        arrivalDate: { $gte: startOfDay, $lte: endOfDay },
-        invoiceCode: { $regex: group.invoiceCodes.map((c: string) => `\\b${c}\\b`).join('|') }
-      };
 
-      const matchingQuery = group.customerCode === "Khách lẻ" ? null : {
-        arrivalDate: { $gte: startOfDay, $lte: endOfDay },
-        $or: [
-          ...(customerId ? [{ customerId: customerId }] : []),
-          { code: { $regex: `^${escapeRegExp(group.customerCode)}$`, $options: "i" } }
-        ]
-      };
+      const currentGroups = codeToGroups[group.customerCode] || "";
+      const isActuallyRetail = !currentGroups || currentGroups.includes("Khách lẻ") || currentGroups.includes("Nội bộ");
+      const isVehicleReset = group.customerCode.startsWith("XT") || group.customerCode.startsWith("XD") || /^\d+$/.test(group.customerCode);
+      const isRetailLogic = isVehicleReset && isActuallyRetail;
 
-      const existingTx = await Transaction.findOne(invoiceMatchQuery) || (matchingQuery ? await Transaction.findOne(matchingQuery) : null);
+      let existingTx = null;
+      if (isRetailLogic) {
+        // Khách vãng lai: match chính xác theo invoiceCode từng cái riêng
+        existingTx = await Transaction.findOne({
+          code: { $regex: `^${escapeRegExp(group.customerCode)}$`, $options: "i" },
+          arrivalDate: { $gte: startOfDay, $lte: endOfDay },
+          invoiceCode: { $regex: `\\b${escapeRegExp(group.invoiceCodes[0])}\\b` }
+        }).lean();
+      } else {
+        // Trường hợp Xe đoàn: tìm tất cả transaction cùng mã đoàn, cùng ngày, chưa thanh toán (status = 0)
+        const potentialTxs = await Transaction.find({
+          code: { $regex: `^${escapeRegExp(group.customerCode)}$`, $options: "i" },
+          arrivalDate: { $gte: startOfDay, $lte: endOfDay },
+          status: 0
+        }).lean();
 
+        for (const tx of potentialTxs) {
+          const txPlate = tx.licensePlate || tx.vehicleNumber || "";
+          if (shouldMatchTransaction(txPlate, group.plate, group.customerCode)) {
+            existingTx = tx;
+            break;
+          }
+        }
+      }
       
       let finalChildInvoices = newChildInvoices;
       let finalInvoiceCodes = group.invoiceCodes;
@@ -196,7 +304,7 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
         // 1. Thêm hóa đơn cũ (Bỏ qua những cái đã bị hủy)
         if (existingTx.childInvoices) {
           existingTx.childInvoices.forEach((ci: any) => {
-            const rawCi = ci.toObject ? ci.toObject() : ci;
+            const rawCi = ci;
             if (!group.cancelledCodes.includes(rawCi.code)) {
               childMap.set(rawCi.code, rawCi);
             }
@@ -214,41 +322,85 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
         finalInvoiceCodes = finalChildInvoices.map((ci: any) => ci.code);
       }
 
-      const updateFilter = existingTx ? { _id: existingTx._id } : (matchingQuery || { invoiceCode: finalInvoiceCodes.join(", ") });
-
-      await Transaction.findOneAndUpdate(
-        updateFilter,
-        {
-          $setOnInsert: {
-            status: 0, 
-            paymentMethod: 0,
-            isRevenueChanged: false,
-            notes: [],
-            extraFee: 0,
-            extraRevenue: 0,
-            paidBy: null,
-            updatedBy: null
-          },
-          $set: {
-            code: group.customerCode,
-            licensePlate,
-            vehicleNumber: licensePlate,
-            groups: customerGroups,
-            brands,
-            customerId,
-            isCustomerDeleted: isCustomerDeleted,
-            revenue: totalRevenue, 
-            profit: totalProfit,
-            ...( (existingTx && (!existingTx.arrivalDate || arrivalDate > existingTx.arrivalDate)) || !existingTx ? { arrivalDate, customerModifiedDate: arrivalDate } : {} ),
-            invoiceCode: finalInvoiceCodes.join(", "),
-            childInvoices: finalChildInvoices,
-            syncSource: "KiotViet",
-            sellerName: latestInv?.soldByName || "Hệ thống",
-            updatedAt: new Date(),
+      let existingTxId = null;
+      if (existingTx) {
+        await Transaction.findOneAndUpdate(
+          { _id: existingTx._id },
+          {
+            $set: {
+              code: group.customerCode,
+              licensePlate,
+              vehicleNumber: licensePlate,
+              groups: customerGroups,
+              brands,
+              customerId,
+              isCustomerDeleted: isCustomerDeleted,
+              revenue: totalRevenue, 
+              profit: totalProfit,
+              ...(!existingTx.arrivalDate || arrivalDate > existingTx.arrivalDate ? { arrivalDate, customerModifiedDate: arrivalDate } : {}),
+              invoiceCode: finalInvoiceCodes.join(", "),
+              childInvoices: finalChildInvoices,
+              syncSource: "KiotViet",
+              sellerName: latestInv?.soldByName || "Hệ thống",
+              updatedAt: new Date(),
+            }
           }
-        },
-        { upsert: true }
-      );
+        );
+        existingTxId = existingTx._id;
+      } else {
+        const createdTx = await Transaction.create({
+          code: group.customerCode,
+          licensePlate,
+          vehicleNumber: licensePlate,
+          groups: customerGroups,
+          brands,
+          customerId,
+          isCustomerDeleted: isCustomerDeleted,
+          revenue: totalRevenue,
+          profit: totalProfit,
+          arrivalDate,
+          customerModifiedDate: arrivalDate,
+          invoiceCode: finalInvoiceCodes.join(", "),
+          childInvoices: finalChildInvoices,
+          syncSource: "KiotViet",
+          sellerName: latestInv?.soldByName || "Hệ thống",
+          status: 0,
+          paymentMethod: 0,
+          isRevenueChanged: false,
+          notes: [],
+          extraFee: 0,
+          extraRevenue: 0,
+          paidBy: null,
+          updatedBy: null
+        });
+        existingTxId = createdTx._id;
+      }
+
+      // Rút các hóa đơn này ra khỏi các giao dịch khác (nếu có) trên cùng ngày để tránh trùng lặp
+      if (finalInvoiceCodes.length > 0) {
+        const otherTxs = await Transaction.find({
+          _id: { $ne: existingTxId },
+          arrivalDate: { $gte: startOfDay, $lte: endOfDay },
+          "childInvoices.code": { $in: finalInvoiceCodes }
+        }).lean();
+
+        for (const otx of otherTxs) {
+          const otxChilds = (otx.childInvoices || []).filter((ci: any) => !finalInvoiceCodes.includes(ci.code));
+          const otxRevenue = otxChilds.reduce((sum: number, ci: any) => sum + (ci.total || 0), 0);
+          const otxInvoiceCodes = otxChilds.map((ci: any) => ci.code).join(", ");
+          await Transaction.updateOne(
+            { _id: otx._id },
+            {
+              $set: {
+                childInvoices: otxChilds,
+                revenue: otxRevenue,
+                invoiceCode: otxInvoiceCodes,
+                updatedAt: new Date()
+              }
+            }
+          );
+        }
+      }
 
       successCount++;
     }));
@@ -386,32 +538,46 @@ export async function runKiotVietSync(range: string = "1day") {
 
 
 
-          const matchQuery = {
+          const potentialTxs = await Transaction.find({
             arrivalDate: { $gte: startOfDay, $lte: endOfDay },
             $or: [
               { customerId: customerId }, 
               { code: { $regex: `^${escapeRegExp(customerCode)}$`, $options: "i" } }
             ]
-          };
+          }).lean();
 
-          await Transaction.findOneAndUpdate(
-            matchQuery,
-            {
-              $setOnInsert: {
-                revenue: 0, profit: 0, status: 0, 
-                paymentMethod: 0, isRevenueChanged: false,
-                customerModifiedDate: arrivalDate, notes: [],
-                extraFee: 0, extraRevenue: 0,
-                arrivalDate: arrivalDate, paidBy: null, updatedBy: null
-              },
-              $set: {
-                code: customerCode, licensePlate: finalLicensePlate, vehicleNumber: finalLicensePlate,
-                groups: finalGroups, brands, customerId,
-                syncSource: "KiotViet", updatedAt: new Date()
+          let existingTx = null;
+          for (const tx of potentialTxs) {
+            const txPlate = tx.licensePlate || tx.vehicleNumber || "";
+            if (shouldMatchTransaction(txPlate, finalLicensePlate, customerCode)) {
+              existingTx = tx;
+              break;
+            }
+          }
+
+          if (existingTx) {
+            await Transaction.updateOne(
+              { _id: existingTx._id },
+              {
+                $set: {
+                  code: customerCode, licensePlate: finalLicensePlate, vehicleNumber: finalLicensePlate,
+                  groups: finalGroups, brands, customerId,
+                  syncSource: "KiotViet", updatedAt: new Date()
+                }
               }
-            },
-            { upsert: true }
-          );
+            );
+          } else {
+            await Transaction.create({
+              code: customerCode, licensePlate: finalLicensePlate, vehicleNumber: finalLicensePlate,
+              groups: finalGroups, brands, customerId,
+              revenue: 0, profit: 0, status: 0,
+              paymentMethod: 0, isRevenueChanged: false,
+              customerModifiedDate: arrivalDate, notes: [],
+              extraFee: 0, extraRevenue: 0,
+              arrivalDate: arrivalDate, paidBy: null, updatedBy: null,
+              syncSource: "KiotViet", createdAt: new Date(), updatedAt: new Date()
+            });
+          }
           hasCustomerChanges = true;
         }));
       }

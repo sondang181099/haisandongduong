@@ -34,6 +34,12 @@ app.prepare().then(() => {
   const { runKiotVietSync } = require("./src/lib/sync-service");
   
   const startAutoSync = async () => {
+    // Tránh chạy trùng lặp khi chạy PM2 Cluster Mode
+    if (process.env.NODE_APP_INSTANCE && process.env.NODE_APP_INSTANCE !== "0") {
+      console.log(`[Server] PM2 Instance ${process.env.NODE_APP_INSTANCE} detected. Auto-sync disabled on this instance.`);
+      return;
+    }
+
     const { SystemSetting } = require("./src/models/SystemSetting");
     const { connectDB } = require("./src/lib/mongodb");
 
@@ -58,27 +64,36 @@ app.prepare().then(() => {
 
     const triggerSync = async () => {
       console.log(`[Server] Running scheduled PYTHON sync at ${new Date().toLocaleTimeString()}...`);
-      try {
-        const pythonScript = path.join(projectDir, "kiotviet-sync-python", "sync_kiotviet.py");
-        // Gọi script Python với chế độ auto
-        const { emitRevenueUpdate } = require("./socket-server");
-        exec(`python3 "${pythonScript}" auto`, (error, stdout, stderr) => {
-          if (error) {
-            console.error(`[Server] Python sync error: ${error.message}`);
-            return;
+      
+      const runSyncProcess = () => {
+        return new Promise((resolve) => {
+          try {
+            const pythonScript = path.join(projectDir, "kiotviet-sync-python", "sync_kiotviet.py");
+            const { emitRevenueUpdate } = require("./socket-server");
+            
+            exec(`python3 "${pythonScript}" auto`, (error, stdout, stderr) => {
+              if (error) {
+                console.error(`[Server] Python sync error: ${error.message}`);
+              } else {
+                if (stderr) {
+                  console.warn(`[Server] Python sync warning: ${stderr}`);
+                }
+                console.log(`[Server] Python sync completed:\n${stdout.split('\n').filter(l => l.startsWith('->')).join('\n')}`);
+                
+                // Phát tín hiệu cập nhật qua WebSocket
+                emitRevenueUpdate();
+              }
+              resolve();
+            });
+          } catch (err) {
+            console.error("[Server] Failed to trigger Python sync:", err);
+            resolve();
           }
-          if (stderr) {
-            console.warn(`[Server] Python sync warning: ${stderr}`);
-          }
-          console.log(`[Server] Python sync completed:\n${stdout.split('\n').filter(l => l.startsWith('->')).join('\n')}`);
-          
-          // Phát tín hiệu cập nhật qua WebSocket
-          emitRevenueUpdate();
         });
-      } catch (err) {
-        console.error("[Server] Failed to trigger Python sync:", err);
-      }
+      };
 
+      // Chờ tiến trình python hoàn thành
+      await runSyncProcess();
       
       const nextInterval = await getInterval();
       console.log(`[Server] Next sync in ${nextInterval / 1000} seconds.`);

@@ -88,11 +88,20 @@ export async function PATCH(
 
     const { id } = await params;
     const body = await request.json();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const userRole = (session.user as any)?.role || "Sale";
+    const isAdmin = userRole === "admin" || userRole === "root";
+
+    if (body.isFrozen === true && !isAdmin) {
+      return NextResponse.json({ error: "Chỉ Admin mới có quyền dừng đồng bộ doanh thu" }, { status: 403 });
+    }
     
     await connectDB();
     await Transaction.findByIdAndUpdate(id, body);
     
-    emitRevenueUpdate();
+    const socketId = request.headers.get("x-socket-id") || undefined;
+    emitRevenueUpdate(socketId);
     return NextResponse.json({ message: "Cập nhật thành công" });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

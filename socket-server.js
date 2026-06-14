@@ -34,10 +34,15 @@ const initSocket = (httpServer) => {
   return io;
 };
 
-const emitRevenueUpdate = () => {
+const emitRevenueUpdate = (excludeSocketId) => {
   if (global.io) {
-    console.log("Emitting revenue-updated event...");
-    global.io.emit("revenue-updated");
+    if (excludeSocketId) {
+      console.log(`Emitting revenue-updated event, excluding socket: ${excludeSocketId}...`);
+      global.io.except(excludeSocketId).emit("revenue-updated");
+    } else {
+      console.log("Emitting revenue-updated event...");
+      global.io.emit("revenue-updated");
+    }
   } else {
     console.warn("Socket.io not initialized, cannot emit event");
   }

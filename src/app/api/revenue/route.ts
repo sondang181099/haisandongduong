@@ -37,7 +37,7 @@ export async function GET(request: Request) {
     const presentationMode = searchParams.get("presentationMode") === "true";
 
     // Danh sách nhóm xe đoàn (lái xe đoàn) - dùng cho bảng trình chiếu
-    const TOUR_VEHICLE_GROUPS = ["4 chỗ", "7 chỗ", "16 chỗ", "29 chỗ", "35 chỗ", "45 chỗ", "Taxi"];
+    const TOUR_VEHICLE_GROUPS = ["4 chỗ", "7 chỗ", "16 chỗ", "29 chỗ", "35 chỗ", "45 chỗ", "Taxi", "Xe điện"];
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const userRole = (session.user as any)?.role || "Sale";
@@ -220,8 +220,10 @@ export async function GET(request: Request) {
 
     await connectDB();
 
-    // Sử dụng Aggregate để JOIN với bảng users
-    const transactions = await Transaction.aggregate([
+    const isExport = searchParams.get("export") === "true";
+
+    // 1. Fetch transactions with simple aggregation (no $lookup)
+    const pipeline: any[] = [
       { $match: query },
       // Tạo trường ảo để sắp xếp chuẩn theo Ngày đến (giống logic hiển thị của frontend)
       {
@@ -235,123 +237,45 @@ export async function GET(request: Request) {
         }
       },
       // Ưu tiên sắp xếp theo effectiveDate, sau đó là updatedAt
-      { $sort: { effectiveDate: -1, updatedAt: -1 } },
-      // Bước A: Chuyển đổi paidBy và updatedBy sang ObjectId nếu là chuỗi ID 24 ký tự
-      {
-        $addFields: {
-          tempPaidByStr: { $toString: { $ifNull: ["$paidBy", ""] } },
-          tempUpdatedByStr: { $toString: { $ifNull: ["$updatedBy", ""] } }
-        }
-      },
-      {
-        $addFields: {
-          paidByObjId: {
-            $cond: {
-              if: { $regexMatch: { input: "$tempPaidByStr", regex: /^[0-9a-fA-F]{24}$/ } },
-              then: { $toObjectId: "$tempPaidByStr" },
-              else: null
-            }
-          },
-          updatedByObjId: {
-            $cond: {
-              if: { $regexMatch: { input: "$tempUpdatedByStr", regex: /^[0-9a-fA-F]{24}$/ } },
-              then: { $toObjectId: "$tempUpdatedByStr" },
-              else: null
-            }
-          }
-        }
-      },
-      // Bước B: Lookup bảng users
-      {
-        $lookup: {
-          from: "users",
-          localField: "paidByObjId",
-          foreignField: "_id",
-          as: "payerById"
-        }
-      },
-      {
-        $lookup: {
-          from: "users",
-          localField: "paidBy",
-          foreignField: "username",
-          as: "payerByUsername"
-        }
-      },
-      {
-        $lookup: {
-          from: "users",
-          localField: "updatedByObjId",
-          foreignField: "_id",
-          as: "updaterById"
-        }
-      },
-      {
-        $lookup: {
-          from: "users",
-          localField: "updatedBy",
-          foreignField: "username",
-          as: "updaterByUsername"
-        }
-      },
-      // Bước C: Kết hợp các kết quả tìm được
-      {
-        $addFields: {
-          payerInfo: { $concatArrays: ["$payerById", "$payerByUsername"] },
-          updaterInfo: { $concatArrays: ["$updaterById", "$updaterByUsername"] }
-        }
-      },
-      // Bước D: Ghi đè fullname vào kết quả
-      {
-        $addFields: {
-          paidBy: {
-            $cond: {
-              if: { $gt: [{ $size: "$payerInfo" }, 0] },
-              then: { 
-                $ifNull: [
-                  { $arrayElemAt: ["$payerInfo.fullname", 0] }, 
-                  { $ifNull: [
-                    { $arrayElemAt: ["$payerInfo.fullName", 0] },
-                    "$paidBy"
-                  ]}
-                ] 
-              },
-              else: "$paidBy"
-            }
-          },
-          updatedBy: {
-            $cond: {
-              if: { $gt: [{ $size: "$updaterInfo" }, 0] },
-              then: { 
-                $ifNull: [
-                  { $arrayElemAt: ["$updaterInfo.fullname", 0] }, 
-                  { $ifNull: [
-                    { $arrayElemAt: ["$updaterInfo.fullName", 0] },
-                    "$updatedBy"
-                  ]}
-                ] 
-              },
-              else: "$updatedBy"
-            }
-          }
-        }
-      },
-      // Bước E: Xóa các trường trung gian
-      {
-        $project: {
-          payerInfo: 0,
-          updaterInfo: 0,
-          payerById: 0,
-          payerByUsername: 0,
-          updaterById: 0,
-          updaterByUsername: 0,
-          paidByObjId: 0,
-          updatedByObjId: 0,
-          tempPaidByStr: 0,
-          tempUpdatedByStr: 0
+      { $sort: { effectiveDate: -1, updatedAt: -1 } }
+    ];
+
+    if (!isExport) {
+      pipeline.push({ $project: { childInvoices: 0 } });
+    }
+
+    const transactions = await Transaction.aggregate(pipeline);
+
+    // 2. Fetch all users to map names in-memory
+    const users = await User.find({}).select("username fullname fullName");
+    const nameMap = new Map<string, string>();
+    users.forEach(u => {
+      const name = u.fullname || u.fullName || u.username;
+      nameMap.set(u._id.toString(), name);
+      if (u.username) {
+        nameMap.set(u.username.toLowerCase(), name);
+      }
+    });
+
+    // 3. Map names in JS
+    transactions.forEach(t => {
+      if (t.paidBy) {
+        const paidByStr = t.paidBy.toString();
+        if (nameMap.has(paidByStr)) {
+          t.paidBy = nameMap.get(paidByStr);
+        } else if (nameMap.has(paidByStr.toLowerCase())) {
+          t.paidBy = nameMap.get(paidByStr.toLowerCase());
         }
       }
-    ]);
+      if (t.updatedBy) {
+        const updatedByStr = t.updatedBy.toString();
+        if (nameMap.has(updatedByStr)) {
+          t.updatedBy = nameMap.get(updatedByStr);
+        } else if (nameMap.has(updatedByStr.toLowerCase())) {
+          t.updatedBy = nameMap.get(updatedByStr.toLowerCase());
+        }
+      }
+    });
 
     // Calculate totals - Truy vấn tổng trên toàn bộ tập dữ liệu (không bị limit 500)
     let totals = { totalRevenue: 0, totalExtraFee: 0, totalProfit: 0, totalCash: 0, totalTransfer: 0 };

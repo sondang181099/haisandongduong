@@ -61,6 +61,8 @@ interface Transaction {
   updatedAt?: string;
   revenueAtPayment?: number;
   reducedRevenueAtPayment?: number;
+  isFrozen?: boolean;
+  frozenRevenue?: number;
 }
 
 interface Totals {
@@ -108,6 +110,7 @@ export function RevenueView({ title }: RevenueViewProps) {
   const router = useRouter();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const role = (session?.user as any)?.role;
+  const isAdmin = role === "admin" || role === "root";
   const viewRevenueOverview = (session?.user as any)?.viewRevenueOverview;
   const canDeleteLocal = (session?.user as any)?.canDeleteLocal;
   const isDriverRole = (session?.user as any)?.isDriverRole === true;
@@ -136,7 +139,7 @@ export function RevenueView({ title }: RevenueViewProps) {
   const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
   const [paidBy, setPaidBy] = useState<string | null>(null);
   const [paidDateAt, setPaidDateAt] = useState<string | null>(null);
-  const [arrivalDate, setArrivalDate] = useState<string | null>(null);
+  const [arrivalDate, setArrivalDate] = useState<string | null>(dayjs().startOf("day").toISOString());
   const [showInternal, setShowInternal] = useState(false);
   const [showOriginalRevenue, setShowOriginalRevenue] = useState(true);
   const [filtersReady, setFiltersReady] = useState(false);
@@ -333,7 +336,11 @@ export function RevenueView({ title }: RevenueViewProps) {
           status: newStatus,
           paymentMethod: method,
           profit: (newStatus === 1 || isCalcOnly || (newStatus === undefined && method !== undefined)) ? editProfit : undefined,
-          reducedRevenue: (newStatus === 1 || isCalcOnly) ? getReducedRevenue(selectedTransaction?.revenue || 0, selectedTransaction?.groups || "", reductionRules) : undefined
+          reducedRevenue: (newStatus === 1 || isCalcOnly) ? (
+            selectedTransaction?.isFrozen 
+              ? getReducedRevenue(selectedTransaction.frozenRevenue ?? selectedTransaction.revenue, selectedTransaction.groups || "", reductionRules)
+              : getReducedRevenue(selectedTransaction?.revenue || 0, selectedTransaction?.groups || "", reductionRules)
+          ) : undefined
         }),
       });
       const data = await res.json();
@@ -346,6 +353,49 @@ export function RevenueView({ title }: RevenueViewProps) {
       notifications.show({ message: error.message || "Không thể cập nhật trạng thái", color: "red" });
     } finally {
       setUpdatingStatus(false);
+    }
+  };
+
+  const handleToggleFreeze = async (id: string, checked: boolean, currentRevenue: number) => {
+    // 1. Cập nhật local state ngay lập tức (Optimistic Update)
+    setTransactions(prev => 
+      prev.map(t => 
+        t._id === id 
+          ? { ...t, isFrozen: checked, frozenRevenue: checked ? currentRevenue : undefined }
+          : t
+      )
+    );
+
+    try {
+      const res = await fetch(`/api/revenue/${id}`, {
+        method: "PATCH",
+        headers: { 
+          "Content-Type": "application/json",
+          "X-Socket-ID": socket?.id || ""
+        },
+        body: JSON.stringify({
+          isFrozen: checked,
+          frozenRevenue: checked ? currentRevenue : null
+        })
+      });
+      if (!res.ok) throw new Error("Không thể cập nhật trạng thái dừng");
+      notifications.show({
+        message: checked ? "Đã dừng đồng bộ DOANH THU cho xe này" : "Đã hủy dừng đồng bộ DOANH THU cho xe này",
+        color: checked ? "orange" : "green"
+      });
+    } catch (error: any) {
+      // 2. Rollback nếu gặp lỗi
+      setTransactions(prev => 
+        prev.map(t => 
+          t._id === id 
+            ? { ...t, isFrozen: !checked, frozenRevenue: !checked ? currentRevenue : undefined }
+            : t
+        )
+      );
+      notifications.show({
+        message: error.message || "Lỗi khi cập nhật trạng thái dừng",
+        color: "red"
+      });
     }
   };
 
@@ -433,18 +483,33 @@ export function RevenueView({ title }: RevenueViewProps) {
     const currentMethod = t.paymentMethod?.toString();
     setSelectedMethod(currentMethod === "1" || currentMethod === "2" ? currentMethod : "1");
 
-    const reducedRevenue = getReducedRevenue(t.revenue || 0, t.groups || "", reductionRules);
+    const baseRev = t.isFrozen ? (t.frozenRevenue ?? t.revenue) : (t.revenue || 0);
+    const reducedRevenue = getReducedRevenue(baseRev, t.groups || "", reductionRules);
     const freshProfit = calculateProfit(reducedRevenue, t.groups || "", profitConfigs, t.extraRevenue || 0);
     setEditProfit(freshProfit);
     setIsCalcOnly(calcOnly);
     setPaymentModalOpen(true);
   };
 
-  const openInfoModal = (t: any) => {
+  const openInfoModal = async (t: any) => {
     setInfoTx(t);
-    setInvoiceDetails(t.childInvoices || []);
-    setLoadingDetails(false);
+    setInvoiceDetails([]);
+    setLoadingDetails(true);
     setInfoModalOpen(true);
+    try {
+      const res = await fetch(`/api/revenue/details?code=${encodeURIComponent(t.code)}`);
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setInvoiceDetails(data.invoices || []);
+      } else {
+        setInvoiceDetails([]);
+      }
+    } catch (err) {
+      console.error("Lỗi khi tải chi tiết hóa đơn:", err);
+      setInvoiceDetails([]);
+    } finally {
+      setLoadingDetails(false);
+    }
   };
 
   const openExtraRevenueModal = (t: Transaction) => {
@@ -456,105 +521,130 @@ export function RevenueView({ title }: RevenueViewProps) {
 
 
   const handleExportExcel = async () => {
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet("Doanh thu");
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (licensePlate) params.set("licensePlate", licensePlate);
+      if (selectedGroups.length > 0) params.set("groups", selectedGroups.join(","));
+      if (status) params.set("status", status);
+      if (paymentMethod) params.set("paymentMethod", paymentMethod);
+      if (paidBy) params.set("paidBy", paidBy);
+      if (paidDateAt) params.set("paidDateAt", dayjs(paidDateAt).format("YYYY-MM-DD"));
+      if (arrivalDate) params.set("arrivalDate", dayjs(arrivalDate).format("YYYY-MM-DD"));
+      if (showInternal) params.set("showInternal", "true");
+      params.set("export", "true"); // Tải đầy đủ childInvoices phục vụ xuất excel
 
-    worksheet.getCell("A1").value = "Tổng hoa hồng:";
-    worksheet.getCell("B1").value = totals.totalProfit;
-    worksheet.getCell("C1").value = "Tổng hoa hồng (Tiền mặt):";
-    worksheet.getCell("D1").value = totals.totalCash;
-    worksheet.getCell("E1").value = "Tổng hoa hồng (Chuyển khoản):";
-    worksheet.getCell("F1").value = totals.totalTransfer;
+      const res = await fetch(`/api/revenue?${params}`);
+      const data = await res.json();
+      const exportTx = data.transactions || [];
 
-    worksheet.getCell("A2").value = "Tổng doanh thu:";
-    worksheet.getCell("B2").value = totals.totalRevenue;
-    worksheet.getCell("C2").value = "Doanh thu phát sinh:";
-    worksheet.getCell("D2").value = totals.totalExtraFee;
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet("Doanh thu");
 
-    [1, 2].forEach(rowNum => {
-      const row = worksheet.getRow(rowNum);
-      row.eachCell((cell, colNumber) => {
-        cell.font = { bold: true };
-        if (colNumber % 2 === 0) {
-          cell.numFmt = "#,##0";
-          cell.font = { bold: true, color: { argb: "FF008000" } };
-        }
+      worksheet.getCell("A1").value = "Tổng hoa hồng:";
+      worksheet.getCell("B1").value = totals.totalProfit;
+      worksheet.getCell("C1").value = "Tổng hoa hồng (Tiền mặt):";
+      worksheet.getCell("D1").value = totals.totalCash;
+      worksheet.getCell("E1").value = "Tổng hoa hồng (Chuyển khoản):";
+      worksheet.getCell("F1").value = totals.totalTransfer;
+
+      worksheet.getCell("A2").value = "Tổng doanh thu:";
+      worksheet.getCell("B2").value = totals.totalRevenue;
+      worksheet.getCell("C2").value = "Doanh thu phát sinh:";
+      worksheet.getCell("D2").value = totals.totalExtraFee;
+
+      [1, 2].forEach(rowNum => {
+        const row = worksheet.getRow(rowNum);
+        row.eachCell((cell, colNumber) => {
+          cell.font = { bold: true };
+          if (colNumber % 2 === 0) {
+            cell.numFmt = "#,##0";
+            cell.font = { bold: true, color: { argb: "FF008000" } };
+          }
+        });
       });
-    });
 
-    const headerRow = worksheet.getRow(4);
-    const headers = [
-      "Mã đoàn", "Mã hóa đơn", "Biển số xe", "Loại xe",
-      ...(role === "admin" ? ["Doanh thu gốc"] : []),
-      "DOANH THU", "Doanh thu phát sinh",
-      "Hoa hồng", "Trạng thái", "Phương thức", "Ngày thanh toán", "Người thanh toán",
-      "NV Cập nhật", "Ngày đến"
-    ];
-    headerRow.values = headers;
-    headerRow.height = 25;
-    headerRow.eachCell((cell) => {
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF4F81BD" }
-      };
-      cell.font = { color: { argb: "FFFFFFFF" }, bold: true };
-      cell.alignment = { vertical: "middle", horizontal: "center" };
-      cell.border = {
-        top: { style: "thin" },
-        left: { style: "thin" },
-        bottom: { style: "thin" },
-        right: { style: "thin" }
-      };
-    });
-
-    transactions.forEach((t) => {
-      const totalExtra = (t.extraRevenue || 0) + (t.extraFee || 0);
-      const baseRevenue = (Number(t.status) === 1 && typeof t.revenueAtPayment === 'number') ? t.revenueAtPayment : (t.revenue || 0);
-
-      const processedInvoiceCodes = (t.childInvoices || []).map((inv: any) => {
-        const isLate = Number(t.status) === 1 && t.paidDateAt && dayjs(inv.purchaseDate).isAfter(dayjs(t.paidDateAt));
-        return inv.code + (isLate ? "-s" : "");
-      }).join(", ");
-
-      const row = worksheet.addRow([
-        t.code,
-        processedInvoiceCodes,
-        t.vehicleNumber || t.licensePlate,
-        t.groups || "",
-        ...(role === "admin" ? [t.revenue] : []),
-        (Number(t.status) === 1 && typeof t.reducedRevenueAtPayment === 'number') ? t.reducedRevenueAtPayment : getReducedRevenue(baseRevenue, t.groups, reductionRules),
-        totalExtra,
-        t.profit,
-        Number(t.status) === 1 ? "Đã thanh toán" : "Chưa thanh toán",
-        Number(t.paymentMethod) === 1 ? "Tiền mặt" : Number(t.paymentMethod) === 2 ? "Chuyển khoản" : "Chưa rõ",
-        t.paidDateAt ? dayjs(t.paidDateAt).tz().format("DD/MM/YYYY HH:mm") : "",
-        t.paidBy || "",
-        t.updatedBy || "",
-        (t.arrivalDate || t.customerModifiedDate || t.updatedAt) ? dayjs(t.arrivalDate || t.customerModifiedDate || t.updatedAt).tz().format("DD/MM/YYYY HH:mm") : "",
-      ]);
-
-      row.eachCell((cell, colNumber) => {
+      const headerRow = worksheet.getRow(4);
+      const headers = [
+        "Mã đoàn", "Mã hóa đơn", "Biển số xe", "Loại xe",
+        ...(role === "admin" ? ["Doanh thu gốc"] : []),
+        "DOANH THU", "Doanh thu phát sinh",
+        "Hoa hồng", "Trạng thái", "Phương thức", "Ngày thanh toán", "Người thanh toán",
+        "NV Cập nhật", "Ngày đến"
+      ];
+      headerRow.values = headers;
+      headerRow.height = 25;
+      headerRow.eachCell((cell) => {
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FF4F81BD" }
+        };
+        cell.font = { color: { argb: "FFFFFFFF" }, bold: true };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
         cell.border = {
           top: { style: "thin" },
           left: { style: "thin" },
           bottom: { style: "thin" },
           right: { style: "thin" }
         };
-        if (colNumber >= 4 && colNumber <= 6) {
-          cell.numFmt = "#,##0";
-        }
       });
-    });
 
-    const widths = [15, 15, 15, 15, 20, 15, 20, 20, 20, 18, 15, 20];
-    worksheet.columns.forEach((col, i) => {
-      col.width = widths[i] || 15;
-    });
+      exportTx.forEach((t: any) => {
+        const totalExtra = (t.extraRevenue || 0) + (t.extraFee || 0);
+        const baseRevenue = (Number(t.status) === 1 && typeof t.revenueAtPayment === 'number') 
+          ? t.revenueAtPayment 
+          : (t.isFrozen ? (t.frozenRevenue ?? t.revenue) : (t.revenue || 0));
 
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-    saveAs(blob, `Bao_cao_doanh_thu_${dayjs().format("YYYYMMDD_HHmmss")}.xlsx`);
+        const processedInvoiceCodes = (t.childInvoices || []).map((inv: any) => {
+          const isLate = Number(t.status) === 1 && t.paidDateAt && dayjs(inv.purchaseDate).isAfter(dayjs(t.paidDateAt));
+          return inv.code + (isLate ? "-s" : "");
+        }).join(", ");
+
+        const row = worksheet.addRow([
+          t.code,
+          processedInvoiceCodes,
+          t.vehicleNumber || t.licensePlate,
+          t.groups || "",
+          ...(role === "admin" ? [t.revenue] : []),
+          (Number(t.status) === 1 && typeof t.reducedRevenueAtPayment === 'number') ? t.reducedRevenueAtPayment : getReducedRevenue(baseRevenue, t.groups, reductionRules),
+          totalExtra,
+          t.profit,
+          Number(t.status) === 1 ? "Đã thanh toán" : "Chưa thanh toán",
+          Number(t.paymentMethod) === 1 ? "Tiền mặt" : Number(t.paymentMethod) === 2 ? "Chuyển khoản" : "Chưa rõ",
+          t.paidDateAt ? dayjs(t.paidDateAt).tz().format("DD/MM/YYYY HH:mm") : "",
+          t.paidBy || "",
+          t.updatedBy || "",
+          (t.arrivalDate || t.customerModifiedDate || t.updatedAt) ? dayjs(t.arrivalDate || t.customerModifiedDate || t.updatedAt).tz().format("DD/MM/YYYY HH:mm") : "",
+        ]);
+
+        row.eachCell((cell, colNumber) => {
+          cell.border = {
+            top: { style: "thin" },
+            left: { style: "thin" },
+            bottom: { style: "thin" },
+            right: { style: "thin" }
+          };
+          if (colNumber >= 4 && colNumber <= 6) {
+            cell.numFmt = "#,##0";
+          }
+        });
+      });
+
+      const widths = [15, 15, 15, 15, 20, 15, 20, 20, 20, 18, 15, 20];
+      worksheet.columns.forEach((col, i) => {
+        col.width = widths[i] || 15;
+      });
+
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      saveAs(blob, `Bao_cao_doanh_thu_${dayjs().format("YYYYMMDD_HHmmss")}.xlsx`);
+    } catch (err) {
+      console.error("Lỗi xuất Excel:", err);
+      notifications.show({ message: "Không thể xuất báo cáo Excel", color: "red" });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const isMobile = useMediaQuery("(max-width: 48em)");
@@ -883,6 +973,19 @@ export function RevenueView({ title }: RevenueViewProps) {
                   <Group gap={6}>
                     {!isDriverRole && (
                       <>
+                        {isAdmin && (
+                          <Switch
+                            checked={!t.isFrozen}
+                            onChange={(event) => {
+                              const newChecked = event.currentTarget.checked;
+                              handleToggleFreeze(t._id, !newChecked, t.revenue);
+                            }}
+                            size="xs"
+                            color="green"
+                            title={t.isFrozen ? "Đã dừng đồng bộ (Gạt để bật lại)" : "Đang đồng bộ bình thường (Gạt để dừng)"}
+                            style={{ display: "flex", alignItems: "center" }}
+                          />
+                        )}
                         <ActionIcon
                           size="sm" variant="filled" color="blue"
                           onClick={() => openPaymentModal(t, true)}
@@ -950,8 +1053,11 @@ export function RevenueView({ title }: RevenueViewProps) {
                   )}
                   <Box>
                     <Text size="xs" c="dimmed">DOANH THU</Text>
-                    <Text size="sm" fw={700} c="blue">
-                      <NumberFormatter value={(Number(t.status) === 1 && typeof t.reducedRevenueAtPayment === 'number') ? t.reducedRevenueAtPayment : getReducedRevenue(t.revenue, t.groups, reductionRules)} thousandSeparator="." decimalSeparator="," suffix=" đ" />
+                    <Text component="div" size="sm" fw={700} c="blue" style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                      <NumberFormatter value={(Number(t.status) === 1 && typeof t.reducedRevenueAtPayment === 'number') ? t.reducedRevenueAtPayment : getReducedRevenue(t.isFrozen ? (t.frozenRevenue ?? t.revenue) : t.revenue, t.groups, reductionRules)} thousandSeparator="." decimalSeparator="," suffix=" đ" />
+                      {t.isFrozen && (
+                        <Badge color="red" variant="light" size="xs" style={{ textTransform: "none" }}>Dừng</Badge>
+                      )}
                     </Text>
                   </Box>
                   <Box>
@@ -963,7 +1069,7 @@ export function RevenueView({ title }: RevenueViewProps) {
                       {Number(t.extraRevenue) > 0 && (
                         <Text size="10px" c="dimmed" fw={500}>
                           Gốc: <NumberFormatter 
-                                value={calculateProfit(getReducedRevenue(t.revenue || 0, t.groups || "", reductionRules), t.groups || "", profitConfigs, 0)} 
+                                value={calculateProfit(getReducedRevenue(t.isFrozen ? (t.frozenRevenue ?? t.revenue) : (t.revenue || 0), t.groups || "", reductionRules), t.groups || "", profitConfigs, 0)} 
                                 thousandSeparator="." 
                                 decimalSeparator="," 
                                 suffix=" đ" 
@@ -1089,8 +1195,11 @@ export function RevenueView({ title }: RevenueViewProps) {
                           </Table.Td>
                         )}
                         <Table.Td style={{ textAlign: "right" }}>
-                          <Text size="sm" fw={600} c="blue.7" style={{ fontVariantNumeric: "tabular-nums" }}>
-                            <NumberFormatter value={(Number(t.status) === 1 && typeof t.reducedRevenueAtPayment === 'number') ? t.reducedRevenueAtPayment : getReducedRevenue(t.revenue, t.groups, reductionRules)} thousandSeparator="." decimalSeparator="," />
+                          <Text component="div" size="sm" fw={600} c="blue.7" style={{ fontVariantNumeric: "tabular-nums", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                            <NumberFormatter value={(Number(t.status) === 1 && typeof t.reducedRevenueAtPayment === 'number') ? t.reducedRevenueAtPayment : getReducedRevenue(t.isFrozen ? (t.frozenRevenue ?? t.revenue) : t.revenue, t.groups, reductionRules)} thousandSeparator="." decimalSeparator="," />
+                            {t.isFrozen && (
+                              <Badge color="red" variant="light" size="xs" style={{ textTransform: "none" }}>Dừng</Badge>
+                            )}
                           </Text>
                         </Table.Td>
                         <Table.Td 
@@ -1116,7 +1225,7 @@ export function RevenueView({ title }: RevenueViewProps) {
                             {Number(t.extraRevenue) > 0 && (
                               <Text size="10px" c="dimmed" fw={500} style={{ fontVariantNumeric: "tabular-nums" }}>
                                 Gốc: <NumberFormatter 
-                                  value={calculateProfit(getReducedRevenue(t.revenue || 0, t.groups || "", reductionRules), t.groups || "", profitConfigs, 0)} 
+                                  value={calculateProfit(getReducedRevenue(t.isFrozen ? (t.frozenRevenue ?? t.revenue) : (t.revenue || 0), t.groups || "", reductionRules), t.groups || "", profitConfigs, 0)} 
                                   thousandSeparator="." 
                                   decimalSeparator="," 
                                 />
@@ -1154,6 +1263,19 @@ export function RevenueView({ title }: RevenueViewProps) {
                             <Text size="sm" c="dimmed" ta="center">—</Text>
                           ) : (
                             <Group gap="xs" wrap="nowrap" align="center" justify="flex-start">
+                              {isAdmin && (
+                                <Switch
+                                  checked={!t.isFrozen}
+                                  onChange={(event) => {
+                                    const newChecked = event.currentTarget.checked;
+                                    handleToggleFreeze(t._id, !newChecked, t.revenue);
+                                  }}
+                                  size="xs"
+                                  color="green"
+                                  title={t.isFrozen ? "Đã dừng đồng bộ (Gạt để bật lại)" : "Đang đồng bộ bình thường (Gạt để dừng)"}
+                                  style={{ display: "flex", alignItems: "center" }}
+                                />
+                              )}
                               <ActionIcon variant="filled" color="blue" onClick={() => openPaymentModal(t, true)} title="Thông tin & Tính toán hoa hồng">
                                 <IconCalculator size={18} />
                               </ActionIcon>
@@ -1366,8 +1488,11 @@ export function RevenueView({ title }: RevenueViewProps) {
 
                       <Group justify="space-between" align="center" p="md" style={{ borderBottom: "1px solid #f1f3f5" }}>
                         <Text size="sm" c="dimmed" fw={500}>Doanh thu giảm</Text>
-                        <Text size="sm" fw={600} c="blue.7">
-                          <NumberFormatter value={(Number(infoTx.status) === 1 && typeof infoTx.reducedRevenueAtPayment === 'number') ? infoTx.reducedRevenueAtPayment : getReducedRevenue(infoTx.revenue, infoTx.groups, reductionRules)} thousandSeparator="." decimalSeparator="," />
+                        <Text component="div" size="sm" fw={600} c="blue.7" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                          <NumberFormatter value={(Number(infoTx.status) === 1 && typeof infoTx.reducedRevenueAtPayment === 'number') ? infoTx.reducedRevenueAtPayment : getReducedRevenue(infoTx.isFrozen ? (infoTx.frozenRevenue ?? infoTx.revenue) : infoTx.revenue, infoTx.groups, reductionRules)} thousandSeparator="." decimalSeparator="," />
+                          {infoTx.isFrozen && (
+                            <Badge color="red" variant="light" size="xs" style={{ textTransform: "none" }}>Dừng</Badge>
+                          )}
                         </Text>
                       </Group>
 
@@ -1541,14 +1666,14 @@ export function RevenueView({ title }: RevenueViewProps) {
                   </Group>
                   <Group justify="space-between" mb={4}>
                     <Text size="xs" c="dimmed">Hoa hồng gốc:</Text>
-                    <Text size="xs" fw={600}><NumberFormatter value={calculateProfit(getReducedRevenue(selectedTransaction.revenue || 0, selectedTransaction.groups || "", reductionRules), selectedTransaction.groups || "", profitConfigs, 0)} thousandSeparator="." decimalSeparator="," /> đ</Text>
+                    <Text size="xs" fw={600}><NumberFormatter value={calculateProfit(getReducedRevenue(selectedTransaction.isFrozen ? (selectedTransaction.frozenRevenue ?? selectedTransaction.revenue) : (selectedTransaction.revenue || 0), selectedTransaction.groups || "", reductionRules), selectedTransaction.groups || "", profitConfigs, 0)} thousandSeparator="." decimalSeparator="," /> đ</Text>
                   </Group>
                 </>
               )}
               {role !== "admin" && (
                 <Group justify="space-between" mb={4}>
                   <Text size="xs" c="dimmed">DOANH THU:</Text>
-                  <Text size="xs" fw={600} c="blue"><NumberFormatter value={(Number(selectedTransaction.status) === 1 && typeof selectedTransaction.reducedRevenueAtPayment === 'number') ? selectedTransaction.reducedRevenueAtPayment : getReducedRevenue(selectedTransaction.revenue || 0, selectedTransaction.groups || "", reductionRules)} thousandSeparator="." decimalSeparator="," /> đ</Text>
+                  <Text size="xs" fw={600} c="blue"><NumberFormatter value={(Number(selectedTransaction.status) === 1 && typeof selectedTransaction.reducedRevenueAtPayment === 'number') ? selectedTransaction.reducedRevenueAtPayment : getReducedRevenue(selectedTransaction.isFrozen ? (selectedTransaction.frozenRevenue ?? selectedTransaction.revenue) : (selectedTransaction.revenue || 0), selectedTransaction.groups || "", reductionRules)} thousandSeparator="." decimalSeparator="," /> đ</Text>
                 </Group>
               )}
               <Divider my={8} />
@@ -1556,7 +1681,20 @@ export function RevenueView({ title }: RevenueViewProps) {
                 <Text size="sm" fw={700}>Hoa hồng dự kiến mới:</Text>
                 <Text size="sm" fw={800} c="blue">
                   <NumberFormatter 
-                    value={calculateProfit((Number(selectedTransaction.status) === 1 && typeof selectedTransaction.reducedRevenueAtPayment === 'number') ? selectedTransaction.reducedRevenueAtPayment : getReducedRevenue((Number(selectedTransaction.status) === 1 && typeof selectedTransaction.revenueAtPayment === 'number') ? selectedTransaction.revenueAtPayment : (selectedTransaction.revenue || 0), selectedTransaction.groups || "", reductionRules), selectedTransaction.groups || "", profitConfigs, newExtraRevenue)} 
+                    value={calculateProfit(
+                      (Number(selectedTransaction.status) === 1 && typeof selectedTransaction.reducedRevenueAtPayment === 'number') 
+                        ? selectedTransaction.reducedRevenueAtPayment 
+                        : getReducedRevenue(
+                            (Number(selectedTransaction.status) === 1 && typeof selectedTransaction.revenueAtPayment === 'number') 
+                              ? selectedTransaction.revenueAtPayment 
+                              : (selectedTransaction.isFrozen ? (selectedTransaction.frozenRevenue ?? selectedTransaction.revenue) : (selectedTransaction.revenue || 0)), 
+                            selectedTransaction.groups || "", 
+                            reductionRules
+                          ), 
+                      selectedTransaction.groups || "", 
+                      profitConfigs, 
+                      newExtraRevenue
+                    )} 
                     thousandSeparator="." 
                     decimalSeparator="," 
                     suffix=" đ" 

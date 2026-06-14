@@ -512,7 +512,7 @@ export default function UsersPage() {
                     <Autocomplete
                       label="Loại xe"
                       placeholder="VD: 45 chỗ..."
-                      data={["4 chỗ", "7 chỗ", "16 chỗ", "29 chỗ", "35 chỗ", "45 chỗ", "Taxi"]}
+                      data={["4 chỗ", "7 chỗ", "16 chỗ", "29 chỗ", "35 chỗ", "45 chỗ", "Taxi", "Xe điện"]}
                       value={newCarType}
                       onChange={setNewCarType}
                       onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addCar())}

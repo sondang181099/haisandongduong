@@ -14,8 +14,12 @@ export async function GET() {
     
     await connectDB();
     const setting = await SystemSetting.findOne({ key: SETTING_KEY });
+    const layoutSetting = await SystemSetting.findOne({ key: "presentation_layout" });
     
-    return NextResponse.json({ autoUpdate: setting ? !!setting.value : true });
+    return NextResponse.json({ 
+      autoUpdate: setting ? !!setting.value : true,
+      layout: layoutSetting ? layoutSetting.value : "new"
+    });
   } catch (error) {
     console.error("GET /api/settings/presentation error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
@@ -27,20 +31,41 @@ export async function POST(request: Request) {
     const session = await getServerSession(authOptions);
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const { autoUpdate } = await request.json();
+    const { autoUpdate, layout } = await request.json();
 
     await connectDB();
     
-    await SystemSetting.findOneAndUpdate(
-      { key: SETTING_KEY },
-      { 
-        value: !!autoUpdate,
-        description: "Cấu hình tự động cập nhật cho màn hình trình chiếu" 
-      },
-      { upsert: true }
-    );
+    if (autoUpdate !== undefined) {
+      await SystemSetting.findOneAndUpdate(
+        { key: SETTING_KEY },
+        { 
+          value: !!autoUpdate,
+          description: "Cấu hình tự động cập nhật cho màn hình trình chiếu" 
+        },
+        { upsert: true }
+      );
+    }
 
-    return NextResponse.json({ autoUpdate });
+    if (layout !== undefined) {
+      await SystemSetting.findOneAndUpdate(
+        { key: "presentation_layout" },
+        { 
+          value: layout,
+          description: "Giao diện trình chiếu: 'old' (cũ) hoặc 'new' (mới)" 
+        },
+        { upsert: true }
+      );
+    }
+
+    // Phát tín hiệu cập nhật qua WebSocket cho màn hình trình chiếu
+    if (global.io) {
+      global.io.emit("revenue-updated");
+    }
+
+    return NextResponse.json({ 
+      autoUpdate: autoUpdate !== undefined ? !!autoUpdate : undefined,
+      layout: layout !== undefined ? layout : undefined
+    });
   } catch (error) {
     console.error("POST /api/settings/presentation error:", error);
     return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });

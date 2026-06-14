@@ -8,8 +8,6 @@ fi
 
 echo "Đang khởi động hệ thống quản lý trên cổng 4000..."
 
-# Dừng các container cũ (nếu có)
-docker-compose down
 
 # Tự động tải và cài đặt docker-buildx nếu hệ thống chưa có
 if ! docker buildx version > /dev/null 2>&1; then
@@ -24,8 +22,16 @@ fi
 export DOCKER_BUILDKIT=1
 export COMPOSE_DOCKER_CLI_BUILD=1
 
-# Build và chạy container mới
-docker-compose up --build -d
+# Build các container trước, nếu thành công mới khởi động dịch vụ
+echo "Đang tiến hành build hệ thống..."
+if docker-compose build; then
+  echo "Build thành công! Đang dừng hệ thống cũ và khởi động dịch vụ mới..."
+  docker-compose down
+  docker-compose up -d
+else
+  echo "Lỗi: Build thất bại. Không khởi động dịch vụ."
+  exit 1
+fi
 
 # Xóa các tệp image lỗi thời/rác (dangling images) sinh ra trong quá trình build để giải phóng bộ nhớ
 echo "Đang dọn dẹp các image docker thừa..."

@@ -36,7 +36,8 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     const reductionSetting = await SystemSetting.findOne({ key: "revenue_reduction_rules" }).lean();
     const reductionRules = reductionSetting?.value || DEFAULT_REDUCTION_RULES;
     
-    const reducedRevenue = getReducedRevenue(transaction.revenue || 0, transaction.groups || "", reductionRules);
+    const baseRevenue = transaction.isFrozen ? (transaction.frozenRevenue ?? transaction.revenue) : (transaction.revenue || 0);
+    const reducedRevenue = getReducedRevenue(baseRevenue, transaction.groups || "", reductionRules);
 
     // 3. Recalculate profit based on REDUCED revenue and new extraRevenue
     const newProfit = calculateProfit(

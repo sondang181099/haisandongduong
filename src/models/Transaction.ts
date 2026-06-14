@@ -34,6 +34,8 @@ export interface ITransaction extends Document {
   user?: any; // Thông tin người dùng (liên kết hệ thống)
   revenueAtPayment?: number; // Doanh thu tại thời điểm thanh toán
   reducedRevenueAtPayment?: number; // Doanh thu ĐÃ GIẢM tại thời điểm thanh toán
+  isFrozen?: boolean; // Xe có bị dừng đồng bộ doanh thu tính hoa hồng hay không
+  frozenRevenue?: number; // Doanh thu gốc tại thời điểm gạt dừng
   createdAt: Date;
   updatedAt: Date;
 }
@@ -81,6 +83,8 @@ const TransactionSchema = new Schema<ITransaction>(
     user: { type: mongoose.Schema.Types.Mixed },
     revenueAtPayment: { type: Number },
     reducedRevenueAtPayment: { type: Number },
+    isFrozen: { type: Boolean, default: false },
+    frozenRevenue: { type: Number },
   },
   { timestamps: true }
 );
