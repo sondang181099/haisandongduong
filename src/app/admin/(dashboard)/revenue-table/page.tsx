@@ -10,6 +10,7 @@ import { IconScreenShare } from "@tabler/icons-react";
 import dayjs from "dayjs";
 import { getReducedRevenue, ReductionRule, type ReductionConfig } from "@/lib/reduction";
 import { usePagePermission } from "@/hooks/usePagePermission";
+import { useSocket } from "@/hooks/useSocket";
 
 interface Transaction {
   _id: string;
@@ -112,8 +113,15 @@ export default function RevenueTableAdminPage() {
         params.set("arrivalDate", dayjs().format("YYYY-MM-DD"));
       }
       params.set("presentationMode", "true"); // Chỉ lấy xe đoàn (bỏ khách lẻ, nội bộ)
+      params.set("_t", Date.now().toString()); // Chống cache trình duyệt
       
-      const res = await fetch(`/api/revenue?${params}`);
+      const res = await fetch(`/api/revenue?${params}`, {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache"
+        }
+      });
       const data = await res.json();
       const txs: Transaction[] = (data.transactions || [])
         .sort((a: Transaction, b: Transaction) => {
@@ -134,7 +142,38 @@ export default function RevenueTableAdminPage() {
     }
   }, [selectedDate]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  const { socket } = useSocket();
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  useEffect(() => {
+    if (socket) {
+      socket.on("revenue-updated", async () => {
+        try {
+          const res = await fetch(`/api/settings/presentation?_t=${Date.now()}`, {
+            cache: "no-store",
+            headers: {
+              "Cache-Control": "no-cache",
+              "Pragma": "no-cache"
+            }
+          });
+          const setting = await res.json();
+          setPresentationLayout(setting.layout || "new");
+          if (setting.autoUpdate !== false) {
+            fetchData();
+          }
+        } catch {
+          fetchData();
+        }
+      });
+    }
+
+    return () => {
+      if (socket) socket.off("revenue-updated");
+    };
+  }, [fetchData, socket]);
 
   // Split into columns with 15 rows each
   const columns: Transaction[][] = [];
@@ -197,7 +236,7 @@ export default function RevenueTableAdminPage() {
                 disabled={updatingLayout}
                 color="orange"
                 size="sm"
-                title="Giao diện cũ"
+                title="Giao diện"
               />
               <Switch
                 checked={autoUpdate}
@@ -339,7 +378,7 @@ export default function RevenueTableAdminPage() {
             </Box>
             <Group align="center" gap="xl">
               <Switch
-                label="Giao diện cũ"
+                label="Giao diện"
                 checked={presentationLayout === "old"}
                 onChange={(event) => handleToggleLayout(event.currentTarget.checked ? "old" : "new")}
                 disabled={updatingLayout}
