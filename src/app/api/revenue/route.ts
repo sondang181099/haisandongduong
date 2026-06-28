@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
-import { Transaction } from "@/models/Transaction";
+import { Revenue } from "@/models/Revenue";
+import { Invoice } from "@/models/Invoice";
 import { Role } from "@/models/Role";
 import { User } from "@/models/User";
 import { getServerSession } from "next-auth";
@@ -33,11 +34,8 @@ export async function GET(request: Request) {
     const paidDateAt = searchParams.get("paidDateAt");
     const search = searchParams.get("search");
     const showInternal = searchParams.get("showInternal") === "true";
-    // Chế độ bảng trình chiếu: chỉ hiển thị xe đoàn (có số chỗ/Taxi)
     const presentationMode = searchParams.get("presentationMode") === "true";
-
-    // Danh sách nhóm xe đoàn (lái xe đoàn) - dùng cho bảng trình chiếu
-    const TOUR_VEHICLE_GROUPS = ["4 chỗ", "7 chỗ", "16 chỗ", "29 chỗ", "35 chỗ", "45 chỗ", "Taxi", "Xe điện"];
+    const activeSearch = licensePlate || search;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const userRole = (session.user as any)?.role || "Sale";
@@ -45,70 +43,366 @@ export async function GET(request: Request) {
     const isDriverRole = (session.user as any)?.isDriverRole === true;
     const userCars: Array<{ licensePlate?: string; [key: string]: any } | string> = (session.user as any)?.cars || [];
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const query: Record<string, any> = {};
-
-    if (licensePlate || (search && search.length >= 4)) {
-      const rawSearch = licensePlate || search;
-      const searchValue = rawSearch ? escapeRegExp(rawSearch) : "";
-      
-      query.$or = [
-        { licensePlate: { $regex: searchValue, $options: "i" } },
-        { code: { $regex: searchValue, $options: "i" } },
-        { vehicleNumber: { $regex: searchValue, $options: "i" } }
-      ];
-    }
-    // Danh sách các nhóm cần ẩn khi không "Hiển thị tất cả" (Sử dụng Blacklist để linh hoạt hơn)
-    const INTERNAL_GROUPS = ["Khách lẻ", "Nội bộ", "Khách lẻ."];
-
-    if (presentationMode) {
-      // Chế độ trình chiếu: chỉ lấy xe đoàn, bỏ qua xe nội bộ/khách lẻ và bỏ qua các bản ghi đã xóa
-      query.groups = { $nin: INTERNAL_GROUPS };
-      query.isCustomerDeleted = { $ne: true };
-    } else if (groups) {
-      const types = groups.split(",");
-      query.groups = { $in: types };
-    } else if (!showInternal) {
-      if (query.$or) {
-        // Nếu đã có $or từ tìm kiếm biển số, kết hợp với điều kiện ẩn Khách lẻ/Nội bộ
-        const existingOr = query.$or;
-        delete query.$or;
-        query.$and = [
-          { $or: existingOr },
-          { groups: { $nin: INTERNAL_GROUPS } }
-        ];
-      } else {
-        query.groups = { $nin: INTERNAL_GROUPS };
-      }
-    }
-
     await connectDB();
 
     // Lấy quyền trực tiếp từ database để có hiệu lực ngay lập tức
     const roleData = await Role.findOne({ key: userRole });
     const viewUnpaid = roleData ? !!roleData.viewUnpaid : false;
     const viewPaid = roleData ? !!roleData.viewPaid : false;
-    const canDeleteLocal = roleData ? !!roleData.canDeleteLocal : false;
-    // Ưu tiên isDriverRole từ DB (mới nhất), fallback về session token
     const driverRoleFromDB = roleData ? !!roleData.isDriverRole : false;
     const effectiveIsDriverRole = driverRoleFromDB || isDriverRole;
 
     const isFullAccess = userRole === "admin" || userRole === "root" || userRole === "manager";
 
-    // === LỌC THEO XE CỦA TÀI XẾ ===
-    // Nếu là role tài xế, chỉ cho xem dữ liệu các xe thuộc danh sách của họ
+    // Lấy danh sách nhóm xe được xem từ cấu hình tài khoản
+    let allowedGroups: string[] = [];
+    const userId = (session.user as any)?.id;
+    const usernameFromSession = (session.user as any)?.username || (session.user as any)?.email;
+    if (userId) {
+      const dbUser = await User.findById(userId).select("allowedGroups");
+      if (dbUser) {
+        allowedGroups = dbUser.allowedGroups || [];
+      }
+    } else if (usernameFromSession) {
+      const dbUser = await User.findOne({ username: usernameFromSession }).select("allowedGroups");
+      if (dbUser) {
+        allowedGroups = dbUser.allowedGroups || [];
+      }
+    }
+
+    // 1. Xây dựng điều kiện lọc ban đầu cho Invoices để tăng hiệu năng
+    const invoiceMatch: any = { status: 1 }; // Chỉ lấy hóa đơn Hoàn thành
+    
+    // Loại bỏ các hóa đơn không có cả mã đoàn và biển số xe
+    invoiceMatch.$and = [
+      {
+        $or: [
+          { customerCode: { $ne: null, $nin: ["", "Khách lẻ", "Khách lẻ."] } },
+          { customerName: { $ne: null, $nin: ["", "Khách lẻ", "Khách lẻ."] } }
+        ]
+      }
+    ];
+
+    if (arrivalDate) {
+      const startOfDay = dayjs.tz(arrivalDate, "Asia/Ho_Chi_Minh").startOf("day").toDate();
+      const endOfDay = dayjs.tz(arrivalDate, "Asia/Ho_Chi_Minh").endOf("day").toDate();
+      invoiceMatch.createdDate = { $gte: startOfDay, $lte: endOfDay };
+    } else if (!search && !paidDateAt && !paidDateFrom && !paidDateTo) {
+      // Nếu không lọc ngày cụ thể, giới hạn trong 60 ngày để tránh quá tải
+      invoiceMatch.createdDate = { $gte: dayjs().subtract(60, "day").toDate() };
+    }
+
+    // 2. pipeline gom nhóm Invoices và map với Revenues, Customers
+    const pipeline: any[] = [
+      { $match: invoiceMatch },
+      {
+        $lookup: {
+          from: "customers",
+          let: { custCode: "$customerCode" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$code", "$$custCode"] } } },
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 }
+          ],
+          as: "customerInfo"
+        }
+      },
+      {
+        $lookup: {
+          from: "customers_original",
+          let: { custCode: "$customerCode" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$code", "$$custCode"] } } },
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 }
+          ],
+          as: "customerOriginalInfo"
+        }
+      },
+      {
+        $addFields: {
+          customer: { $arrayElemAt: ["$customerInfo", 0] },
+          customerOriginal: { $arrayElemAt: ["$customerOriginalInfo", 0] }
+        }
+      },
+      {
+        $addFields: {
+          rawPlate: {
+            $cond: {
+              if: {
+                $and: [
+                  { $ne: ["$customerName", null] },
+                  { $ne: ["$customerName", ""] },
+                  { $ne: ["$customerName", "Khách lẻ"] },
+                  { $ne: ["$customerName", "Khách lẻ."] }
+                ]
+              },
+              then: "$customerName",
+              else: {
+                $ifNull: [
+                  "$customer.name",
+                  { $ifNull: ["$customerOriginal.name", "$customerCode"] }
+                ]
+              }
+            }
+          },
+          dateKey: {
+            $dateToString: { format: "%Y-%m-%d", date: "$createdDate", timezone: "Asia/Ho_Chi_Minh" }
+          }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            code: "$customerCode",
+            dateKey: "$dateKey",
+            plate: "$rawPlate"
+          },
+          invoices: {
+            $push: {
+              code: "$code",
+              purchaseDate: "$createdDate",
+              soldByName: "$soldByName",
+              total: "$total",
+              mainProducts: {
+                $reduce: {
+                  input: { $ifNull: ["$invoiceDetails.productName", []] },
+                  initialValue: "",
+                  in: {
+                    $cond: [
+                      { $eq: ["$$value", ""] },
+                      "$$this",
+                      { $concat: ["$$value", ", ", "$$this"] }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          revenue: { $sum: "$total" },
+          arrivalDate: { $max: "$createdDate" }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          code: "$_id.code",
+          dateKey: "$_id.dateKey",
+          plate: "$_id.plate",
+          invoiceCode: { $cond: [{ $eq: [{ $size: "$invoices" }, 1] }, { $arrayElemAt: ["$invoices.code", 0] }, null] },
+          revenue: 1,
+          arrivalDate: 1,
+          childInvoices: "$invoices"
+        }
+      },
+      {
+        $lookup: {
+          from: "revenues",
+          let: { code: "$code", plate: "$plate", dateKey: "$dateKey", invoiceCode: "$invoiceCode" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $or: [
+                    {
+                      $and: [
+                        { $ne: ["$$invoiceCode", null] },
+                        { $eq: ["$invoiceCode", "$$invoiceCode"] }
+                      ]
+                    },
+                    {
+                      $and: [
+                        { $eq: ["$code", "$$code"] },
+                        {
+                          $eq: [
+                            { $dateToString: { format: "%Y-%m-%d", date: "$arrivalDate", timezone: "Asia/Ho_Chi_Minh" } },
+                            "$$dateKey"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          as: "revenueInfo"
+        }
+      },
+      {
+        $lookup: {
+          from: "customers",
+          let: { custCode: "$code" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$code", "$$custCode"] } } },
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 }
+          ],
+          as: "customerInfo"
+        }
+      },
+      {
+        $lookup: {
+          from: "customers_original",
+          let: { custCode: "$code" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$code", "$$custCode"] } } },
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 }
+          ],
+          as: "customerOriginalInfo"
+        }
+      },
+      {
+        $addFields: {
+          customer: { $arrayElemAt: ["$customerInfo", 0] },
+          customerOriginal: { $arrayElemAt: ["$customerOriginalInfo", 0] },
+          rev: { $arrayElemAt: ["$revenueInfo", 0] }
+        }
+      },
+      {
+        $project: {
+          _id: {
+            $cond: [
+              { $not: ["$rev"] },
+              { $concat: ["virtual_", "$code", "_", "$dateKey", { $cond: ["$invoiceCode", { $concat: ["_", "$invoiceCode"] }, ""] }] },
+              "$rev._id"
+            ]
+          },
+          code: 1,
+          invoiceCode: 1,
+          dateKey: 1,
+          revenue: { $cond: [{ $and: ["$rev", "$rev.isFrozen"] }, { $ifNull: ["$rev.frozenRevenue", "$revenue"] }, "$revenue"] },
+          arrivalDate: 1,
+          childInvoices: 1,
+          status: { $ifNull: ["$rev.status", 0] },
+          paymentMethod: { $ifNull: ["$rev.paymentMethod", 0] },
+          vehicleNumber: { $ifNull: ["$rev.vehicleNumber", { $ifNull: ["$rev.licensePlate", { $ifNull: ["$plate", "$code"] }] }] },
+          licensePlate: { $ifNull: ["$rev.licensePlate", { $ifNull: ["$plate", "$code"] }] },
+          groups: {
+            $ifNull: [
+              "$rev.groups",
+              {
+                $ifNull: [
+                  "$customer.groups",
+                  { $ifNull: ["$customerOriginal.groups", "Khách lẻ."] }
+                ]
+              }
+            ]
+          },
+          extraFee: { $ifNull: ["$rev.extraFee", 0] },
+          extraRevenue: { $ifNull: ["$rev.extraRevenue", 0] },
+          profit: { $ifNull: ["$rev.profit", 0] },
+          paidDateAt: "$rev.paidDateAt",
+          paidBy: "$rev.paidBy",
+          updatedBy: "$rev.updatedBy",
+          sellerName: "$rev.sellerName",
+          isFrozen: { $ifNull: ["$rev.isFrozen", false] },
+          frozenRevenue: "$rev.frozenRevenue",
+          isHidden: { $ifNull: ["$rev.isHidden", false] },
+          isCustomerDeleted: { $ifNull: ["$rev.isCustomerDeleted", { $ifNull: ["$customer.isDeleted", false] }] }
+        }
+      }
+    ];
+
+    // 3. Lọc điều kiện tìm kiếm và phân quyền ở bước cuối cùng
+    const postQuery: any = {};
+
+    if (licensePlate || (search && search.length >= 4)) {
+      const rawSearch = licensePlate || search;
+      const searchValue = rawSearch ? escapeRegExp(rawSearch) : "";
+      postQuery.$or = [
+        { licensePlate: { $regex: searchValue, $options: "i" } },
+        { code: { $regex: searchValue, $options: "i" } },
+        { vehicleNumber: { $regex: searchValue, $options: "i" } }
+      ];
+    }
+
+    const INTERNAL_GROUPS = ["Khách lẻ", "Nội bộ", "Khách lẻ."];
+
+    if (allowedGroups && allowedGroups.length > 0) {
+      if (groups) {
+        const types = groups.split(",").filter((t: string) => allowedGroups.includes(t));
+        postQuery.groups = { $in: types };
+      } else {
+        postQuery.groups = { $in: allowedGroups };
+      }
+    } else {
+      if (presentationMode) {
+        postQuery.groups = { $nin: INTERNAL_GROUPS };
+        postQuery.isHidden = { $ne: true };
+      } else if (groups) {
+        const types = groups.split(",");
+        postQuery.groups = { $in: types };
+      } else if (!showInternal) {
+        if (postQuery.$or) {
+          const existingOr = postQuery.$or;
+          delete postQuery.$or;
+          postQuery.$and = [
+            { $or: existingOr },
+            { groups: { $nin: INTERNAL_GROUPS } }
+          ];
+        } else {
+          postQuery.groups = { $nin: INTERNAL_GROUPS };
+        }
+      }
+    }
+
+    // Lọc theo phân quyền status
+    if (presentationMode) {
+      if (status !== null && status !== undefined && status !== "") {
+        postQuery.status = Number(status);
+      }
+    } else {
+      const allowedStatuses = [];
+      const driverViewAll = effectiveIsDriverRole && !viewUnpaid && !viewPaid;
+      if (viewUnpaid || driverViewAll) allowedStatuses.push(0);
+      if (viewPaid || driverViewAll) allowedStatuses.push(1);
+
+      if (status !== null && status !== undefined && status !== "") {
+        const requestedStatus = Number(status);
+        if (isFullAccess || allowedStatuses.includes(requestedStatus)) {
+          postQuery.status = requestedStatus;
+        } else {
+          postQuery.status = -1;
+        }
+      } else {
+        if (isFullAccess && !viewUnpaid && !viewPaid && !effectiveIsDriverRole) {
+          // Admin xem tất cả
+        } else if (allowedStatuses.length === 1) {
+          postQuery.status = allowedStatuses[0];
+        } else if (allowedStatuses.length === 2) {
+          postQuery.status = { $in: [0, 1] };
+        } else if (!isFullAccess && !effectiveIsDriverRole) {
+          postQuery.status = -1;
+        }
+      }
+
+      if (!isFullAccess && !viewUnpaid && !viewPaid && !effectiveIsDriverRole) {
+        postQuery.status = 1;
+        if (userFullname) {
+          postQuery.sellerName = { $regex: escapeRegExp(userFullname), $options: "i" };
+        }
+      }
+    }
+
+    // Phân quyền theo biển số của Tài xế
     if (effectiveIsDriverRole && !isFullAccess) {
-      // Lấy danh sách xe mới nhất từ DB thay vì session để không bị chậm trễ
       const userId = (session.user as any)?.id;
+      const usernameFromSession = (session.user as any)?.username || (session.user as any)?.email;
       let freshUserCars = userCars;
       if (userId) {
         const freshUser = await User.findById(userId).select("cars");
         if (freshUser) {
           freshUserCars = freshUser.cars || [];
         }
+      } else if (usernameFromSession) {
+        const freshUser = await User.findOne({ username: usernameFromSession }).select("cars");
+        if (freshUser) {
+          freshUserCars = freshUser.cars || [];
+        }
       }
 
-      // Trích xuất danh sách biển số từ cars (có thể là string hoặc object)
       const driverLicensePlates: string[] = freshUserCars
         .map((car: any) => {
           if (typeof car === "string") return car;
@@ -117,136 +411,178 @@ export async function GET(request: Request) {
         .filter(Boolean);
 
       if (driverLicensePlates.length === 0) {
-        // Không có xe nào → không trả dữ liệu
         return NextResponse.json({ transactions: [], totals: { totalRevenue: 0, totalExtraFee: 0, totalProfit: 0, totalCash: 0, totalTransfer: 0 } });
       }
 
-      // Xây dựng điều kiện lọc theo biển số
       const vehicleConditions = driverLicensePlates.map((plate) => [
         { vehicleNumber: { $regex: `^${plate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } },
         { licensePlate: { $regex: `^${plate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } },
       ]).flat();
 
-      // Kết hợp với điều kiện đang có trong query
-      if (query.$and) {
-        query.$and.push({ $or: vehicleConditions });
-      } else if (query.$or) {
-        const existingOr = query.$or;
-        delete query.$or;
-        query.$and = [{ $or: existingOr }, { $or: vehicleConditions }];
+      if (postQuery.$and) {
+        postQuery.$and.push({ $or: vehicleConditions });
+      } else if (postQuery.$or) {
+        const existingOr = postQuery.$or;
+        delete postQuery.$or;
+        postQuery.$and = [{ $or: existingOr }, { $or: vehicleConditions }];
       } else {
-        query.$or = vehicleConditions;
+        postQuery.$or = vehicleConditions;
       }
     }
 
-    // Chỉ ẩn các bản ghi bị xóa cục bộ khi ở chế độ trình chiếu
-    if (presentationMode) {
-      query.isHidden = { $ne: true };
-    }
-
-    // Phân quyền xem đơn hàng theo trạng thái
-    if (presentationMode) {
-      // Chế độ trình chiếu: Mặc định hiển thị theo tham số status hoặc tất cả nếu không có
-      if (status !== null && status !== undefined && status !== "") {
-        query.status = Number(status);
-      }
-    } else {
-      // Logic phân quyền mới: Tôn trọng tuyệt đối viewUnpaid và viewPaid
-      const allowedStatuses = [];
-      // Tài xế: Nếu admin có tick cụ thể, tôn trọng tick. Nếu không tick gì cả (cấu hình cũ), cho phép xem tất cả.
-      const driverViewAll = effectiveIsDriverRole && !viewUnpaid && !viewPaid;
-      if (viewUnpaid || driverViewAll) allowedStatuses.push(0);
-      if (viewPaid || driverViewAll) allowedStatuses.push(1);
-
-      // Nếu người dùng chọn filter cụ thể trên giao diện
-      if (status !== null && status !== undefined && status !== "") {
-        const requestedStatus = Number(status);
-        // Kiểm tra xem status yêu cầu có nằm trong quyền được xem không
-        if (isFullAccess || allowedStatuses.includes(requestedStatus)) {
-          query.status = requestedStatus;
-        } else {
-          // Nếu không có quyền xem status đó, ép về rỗng để không ra kết quả hoặc ép về status được phép
-          query.status = -1; // Không khớp với bất kỳ đơn nào
-        }
-      } else {
-        // Nếu không chọn filter trên giao diện, hiển thị theo quyền
-        if (isFullAccess && !viewUnpaid && !viewPaid && !effectiveIsDriverRole) {
-          // Trường hợp Admin chưa được cấu hình quyền cụ thể (mặc định cho xem hết)
-          // query.status không set = xem tất cả
-        } else if (allowedStatuses.length === 1) {
-          query.status = allowedStatuses[0];
-        } else if (allowedStatuses.length === 2) {
-          query.status = { $in: [0, 1] };
-        } else if (!isFullAccess && !effectiveIsDriverRole) {
-          // Người dùng thường không có quyền xem loại nào cả
-          query.status = -1;
-        }
-      }
-
-      // Hạn chế xem theo sellerName nếu không phải FullAccess, không có quyền viewPaid/viewUnpaid, VÀ KHÔNG PHẢI LÀ TÀI XẾ
-      if (!isFullAccess && !viewUnpaid && !viewPaid && !effectiveIsDriverRole) {
-        query.status = 1; // Mặc định chỉ xem đơn đã thanh toán
-        if (userFullname) {
-          query.sellerName = { $regex: escapeRegExp(userFullname), $options: "i" };
-        }
-      }
-    }
     if (paymentMethod !== null && paymentMethod !== undefined && paymentMethod !== "") {
-      query.paymentMethod = Number(paymentMethod);
+      postQuery.paymentMethod = Number(paymentMethod);
     }
     if (paidBy) {
-      query.paidBy = { $regex: escapeRegExp(paidBy), $options: "i" };
+      postQuery.paidBy = { $regex: escapeRegExp(paidBy), $options: "i" };
     }
     if (paidDateFrom || paidDateTo) {
-      query.paidDateAt = {};
+      postQuery.paidDateAt = {};
       if (paidDateFrom) {
-        query.paidDateAt.$gte = dayjs.tz(paidDateFrom, "Asia/Ho_Chi_Minh").startOf("day").toDate();
+        postQuery.paidDateAt.$gte = dayjs.tz(paidDateFrom, "Asia/Ho_Chi_Minh").startOf("day").toDate();
       }
       if (paidDateTo) {
-        query.paidDateAt.$lte = dayjs.tz(paidDateTo, "Asia/Ho_Chi_Minh").endOf("day").toDate();
+        postQuery.paidDateAt.$lte = dayjs.tz(paidDateTo, "Asia/Ho_Chi_Minh").endOf("day").toDate();
       }
     }
-    if (arrivalDate) {
-      const startOfDay = dayjs.tz(arrivalDate, "Asia/Ho_Chi_Minh").startOf("day").toDate();
-      const endOfDay = dayjs.tz(arrivalDate, "Asia/Ho_Chi_Minh").endOf("day").toDate();
-      query.arrivalDate = { $gte: startOfDay, $lte: endOfDay };
-    }
-
     if (paidDateAt && !paidDateFrom && !paidDateTo) {
       const startOfDay = dayjs.tz(paidDateAt, "Asia/Ho_Chi_Minh").startOf("day").toDate();
       const endOfDay = dayjs.tz(paidDateAt, "Asia/Ho_Chi_Minh").endOf("day").toDate();
-      query.paidDateAt = { $gte: startOfDay, $lte: endOfDay };
+      postQuery.paidDateAt = { $gte: startOfDay, $lte: endOfDay };
     }
 
-    await connectDB();
+    pipeline.push({ $match: postQuery });
+
+    // Sắp xếp
+    pipeline.push({
+      $addFields: {
+        effectiveDate: { $ifNull: ["$arrivalDate", "$dateKey"] }
+      }
+    });
+    pipeline.push({ $sort: { effectiveDate: -1 } });
 
     const isExport = searchParams.get("export") === "true";
-
-    // 1. Fetch transactions with simple aggregation (no $lookup)
-    const pipeline: any[] = [
-      { $match: query },
-      // Tạo trường ảo để sắp xếp chuẩn theo Ngày đến (giống logic hiển thị của frontend)
-      {
-        $addFields: {
-          effectiveDate: { 
-            $ifNull: [
-              "$arrivalDate", 
-              { $ifNull: ["$customerModifiedDate", "$updatedAt"] }
-            ] 
-          }
-        }
-      },
-      // Ưu tiên sắp xếp theo effectiveDate, sau đó là updatedAt
-      { $sort: { effectiveDate: -1, updatedAt: -1 } }
-    ];
-
     if (!isExport) {
       pipeline.push({ $project: { childInvoices: 0 } });
     }
 
-    const transactions = await Transaction.aggregate(pipeline);
+    const transactions = await Invoice.aggregate(pipeline);
 
-    // 2. Fetch all users to map names in-memory
+    // Bổ sung các khách hàng tạo mới/sửa đổi trong ngày hôm nay vào danh sách hiển thị mặc định (dù chưa có hóa đơn)
+    try {
+      const targetDateStr = arrivalDate || dayjs().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD");
+      const startOfTargetDay = dayjs.tz(targetDateStr, "Asia/Ho_Chi_Minh").startOf("day").toDate();
+      const endOfTargetDay = dayjs.tz(targetDateStr, "Asia/Ho_Chi_Minh").endOf("day").toDate();
+
+      const existingCodes = new Set(transactions.map(t => t.code?.toLowerCase()).filter(Boolean));
+      const customerQuery: any = {
+        createdAt: { $gte: startOfTargetDay, $lte: endOfTargetDay },
+        isDeleted: { $ne: true }
+      };
+
+      if (activeSearch && activeSearch.length >= 3) {
+        const escapedSearch = activeSearch.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        customerQuery.$or = [
+          { code: { $regex: escapedSearch, $options: "i" } },
+          { name: { $regex: escapedSearch, $options: "i" } }
+        ];
+      }
+
+      const { Customer } = await import("@/models/Customer");
+      const todayCustomers = await Customer.find(customerQuery).sort({ createdAt: -1 });
+
+      const mergedCustomers = todayCustomers;
+      const processedVirtualCodes = new Set<string>();
+
+      for (const dbCustomer of mergedCustomers) {
+        const lowerCode = dbCustomer.code.toLowerCase();
+        const groupValue = dbCustomer.groups || "Khách lẻ.";
+
+        if (existingCodes.has(lowerCode) || processedVirtualCodes.has(lowerCode)) {
+          continue;
+        }
+        if (allowedGroups && allowedGroups.length > 0 && !allowedGroups.includes(groupValue)) {
+          continue;
+        }
+        if (presentationMode && INTERNAL_GROUPS.includes(groupValue)) {
+          continue;
+        }
+        if (!showInternal && allowedGroups.length === 0 && INTERNAL_GROUPS.includes(groupValue)) {
+          continue;
+        }
+
+        processedVirtualCodes.add(lowerCode);
+        const virtualTx = {
+          _id: `virtual_${dbCustomer.code}_${targetDateStr}`,
+          code: dbCustomer.code,
+          licensePlate: dbCustomer.name || "Chưa xác định",
+          vehicleNumber: dbCustomer.name || "Chưa xác định",
+          groups: groupValue,
+          revenue: 0,
+          profit: 0,
+          status: 0,
+          paymentMethod: 0,
+          extraFee: 0,
+          extraRevenue: 0,
+          isCustomerDeleted: dbCustomer.isDeleted,
+          arrivalDate: dbCustomer.createdAt,
+          createdAt: dbCustomer.createdAt,
+          updatedAt: dbCustomer.updatedAt,
+          isVirtual: true
+        };
+        transactions.push(virtualTx);
+      }
+    } catch (e) {
+      console.error("Error appending today's customer virtual transactions:", e);
+    }
+
+    // Nếu có từ khóa tìm kiếm và kết quả transactions trống hoặc không chứa mã đó
+    if (activeSearch && activeSearch.length >= 3) {
+      const matchCode = activeSearch.trim();
+      const hasMatch = transactions.some(t => t.code && t.code.toLowerCase() === matchCode.toLowerCase());
+      if (!hasMatch) {
+        const mongoose = require("mongoose");
+        const { Customer } = await import("@/models/Customer");
+        const escapedSearch = matchCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        let dbCustomer = await Customer.findOne({
+          code: { $regex: `^${escapedSearch}$`, $options: "i" }
+        }).sort({ createdAt: -1 });
+
+        if (!dbCustomer) {
+          const db = mongoose.connection.db;
+          dbCustomer = await db.collection("customers_original").findOne({
+            code: { $regex: `^${escapedSearch}$`, $options: "i" }
+          });
+        }
+
+        if (dbCustomer) {
+          const groupValue = dbCustomer.groups || "Khách lẻ.";
+          if (!allowedGroups || allowedGroups.length === 0 || allowedGroups.includes(groupValue)) {
+            const virtualTx = {
+              _id: `virtual_${dbCustomer.code}_${dayjs().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD")}`,
+              code: dbCustomer.code,
+              licensePlate: dbCustomer.name || "Chưa xác định",
+              vehicleNumber: dbCustomer.name || "Chưa xác định",
+              groups: groupValue,
+              revenue: 0,
+              profit: 0,
+              status: 0,
+              paymentMethod: 0,
+              extraFee: 0,
+              extraRevenue: 0,
+              isCustomerDeleted: dbCustomer.isDeleted,
+              arrivalDate: dbCustomer.createdAt || new Date(),
+              createdAt: dbCustomer.createdAt || new Date(),
+              updatedAt: dbCustomer.updatedAt || new Date(),
+              isVirtual: true
+            };
+            transactions.unshift(virtualTx);
+          }
+        }
+      }
+    }
+
+    // 4. Map tên nhân viên in-memory
     const users = await User.find({}).select("username fullname fullName");
     const nameMap = new Map<string, string>();
     users.forEach(u => {
@@ -257,7 +593,6 @@ export async function GET(request: Request) {
       }
     });
 
-    // 3. Map names in JS
     transactions.forEach(t => {
       if (t.paidBy) {
         const paidByStr = t.paidBy.toString();
@@ -277,58 +612,29 @@ export async function GET(request: Request) {
       }
     });
 
-    // Calculate totals - Truy vấn tổng trên toàn bộ tập dữ liệu (không bị limit 500)
-    let totals = { totalRevenue: 0, totalExtraFee: 0, totalProfit: 0, totalCash: 0, totalTransfer: 0 };
-    
-    const showTotals = isFullAccess || viewUnpaid;
-    
-    if (showTotals) {
-      const totalsAggregation = await Transaction.aggregate([
-        { $match: query },
-        {
-          $group: {
-            _id: null,
-            totalRevenue: { $sum: { $toDouble: { $ifNull: ["$revenue", 0] } } },
-            totalExtraFee: { 
-              $sum: { 
-                $add: [
-                  { $toDouble: { $ifNull: ["$extraFee", 0] } }, 
-                  { $toDouble: { $ifNull: ["$extraRevenue", 0] } }
-                ] 
-              } 
-            },
-            totalProfit: { $sum: { $toDouble: { $ifNull: ["$profit", 0] } } },
-            totalCash: {
-              $sum: {
-                $cond: [
-                  { $eq: [{ $toInt: { $ifNull: ["$paymentMethod", 0] } }, 1] }, 
-                  { $toDouble: { $ifNull: ["$profit", 0] } }, 
-                  0
-                ]
-              }
-            },
-            totalTransfer: {
-              $sum: {
-                $cond: [
-                  { $eq: [{ $toInt: { $ifNull: ["$paymentMethod", 0] } }, 2] }, 
-                  { $toDouble: { $ifNull: ["$profit", 0] } }, 
-                  0
-                ]
-              }
-            }
-          }
-        }
-      ]);
+    // Sắp xếp lại danh sách transactions theo ngày đến (arrivalDate) mới nhất (descending)
+    transactions.sort((a, b) => {
+      const dateA = new Date(a.arrivalDate || a.createdAt || 0).getTime();
+      const dateB = new Date(b.arrivalDate || b.createdAt || 0).getTime();
+      return dateB - dateA;
+    });
 
-      if (totalsAggregation.length > 0) {
-        totals = {
-          totalRevenue: totalsAggregation[0].totalRevenue || 0,
-          totalExtraFee: totalsAggregation[0].totalExtraFee || 0,
-          totalProfit: totalsAggregation[0].totalProfit || 0,
-          totalCash: totalsAggregation[0].totalCash || 0,
-          totalTransfer: totalsAggregation[0].totalTransfer || 0,
-        };
-      }
+    // 5. Tính toán tổng số tiền (Totals)
+    const totals = { totalRevenue: 0, totalExtraFee: 0, totalProfit: 0, totalCash: 0, totalTransfer: 0 };
+    const showTotals = isFullAccess || viewUnpaid;
+
+    if (showTotals) {
+      transactions.forEach(t => {
+        if (t.isCustomerDeleted) return;
+        totals.totalRevenue += Number(t.revenue || 0);
+        totals.totalExtraFee += Number(t.extraFee || 0) + Number(t.extraRevenue || 0);
+        totals.totalProfit += Number(t.profit || 0);
+        if (Number(t.paymentMethod) === 1) {
+          totals.totalCash += Number(t.profit || 0);
+        } else if (Number(t.paymentMethod) === 2) {
+          totals.totalTransfer += Number(t.profit || 0);
+        }
+      });
     }
 
     return NextResponse.json({
