@@ -491,6 +491,13 @@ export async function GET(request: Request) {
       const { Customer } = await import("@/models/Customer");
       const todayCustomers = await Customer.find(customerQuery).sort({ createdAt: -1 });
 
+      // Lấy danh sách các mã khách hàng đã bị ẩn trong ngày hôm nay trong bảng revenues
+      const hiddenRevenues = await Revenue.find({
+        arrivalDate: { $gte: startOfTargetDay, $lte: endOfTargetDay },
+        isHidden: true
+      }).select("code");
+      const hiddenCodes = new Set(hiddenRevenues.map(r => r.code.toLowerCase()));
+
       const mergedCustomers = todayCustomers;
       const processedVirtualCodes = new Set<string>();
 
@@ -498,6 +505,10 @@ export async function GET(request: Request) {
         const lowerCode = dbCustomer.code.toLowerCase();
         const groupValue = dbCustomer.groups || "Khách lẻ.";
 
+        // Nếu khách hàng đã bị ẩn cục bộ (isHidden = true) thì không chèn ảo nữa
+        if (hiddenCodes.has(lowerCode)) {
+          continue;
+        }
         if (existingCodes.has(lowerCode) || processedVirtualCodes.has(lowerCode)) {
           continue;
         }
@@ -557,9 +568,21 @@ export async function GET(request: Request) {
 
         if (dbCustomer) {
           const groupValue = dbCustomer.groups || "Khách lẻ.";
-          if (!allowedGroups || allowedGroups.length === 0 || allowedGroups.includes(groupValue)) {
+          const lowerCode = dbCustomer.code.toLowerCase();
+          
+          // Kiểm tra xem khách hàng có bị ẩn cục bộ ngày hôm nay không
+          const targetDateStr = dayjs().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD");
+          const startOfTargetDay = dayjs.tz(targetDateStr, "Asia/Ho_Chi_Minh").startOf("day").toDate();
+          const endOfTargetDay = dayjs.tz(targetDateStr, "Asia/Ho_Chi_Minh").endOf("day").toDate();
+          const isHiddenToday = await Revenue.findOne({
+            code: dbCustomer.code,
+            arrivalDate: { $gte: startOfTargetDay, $lte: endOfTargetDay },
+            isHidden: true
+          });
+
+          if (!isHiddenToday && (!allowedGroups || allowedGroups.length === 0 || allowedGroups.includes(groupValue))) {
             const virtualTx = {
-              _id: `virtual_${dbCustomer.code}_${dayjs().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD")}`,
+              _id: `virtual_${dbCustomer.code}_${targetDateStr}`,
               code: dbCustomer.code,
               licensePlate: dbCustomer.name || "Chưa xác định",
               vehicleNumber: dbCustomer.name || "Chưa xác định",
