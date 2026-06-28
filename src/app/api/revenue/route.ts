@@ -505,8 +505,10 @@ export async function GET(request: Request) {
         const lowerCode = dbCustomer.code.toLowerCase();
         const groupValue = dbCustomer.groups || "Khách lẻ.";
 
-        // Nếu khách hàng đã bị ẩn cục bộ (isHidden = true) thì không chèn ảo nữa
-        if (hiddenCodes.has(lowerCode)) {
+        const isHidden = hiddenCodes.has(lowerCode);
+        
+        // Nếu ở chế độ trình chiếu (presentationMode = true) và bị ẩn thì bỏ qua hẳn
+        if (presentationMode && isHidden) {
           continue;
         }
         if (existingCodes.has(lowerCode) || processedVirtualCodes.has(lowerCode)) {
@@ -539,7 +541,8 @@ export async function GET(request: Request) {
           arrivalDate: dbCustomer.createdAt,
           createdAt: dbCustomer.createdAt,
           updatedAt: dbCustomer.updatedAt,
-          isVirtual: true
+          isVirtual: true,
+          isHidden: isHidden // Gán thuộc tính isHidden thực tế để frontend hiển thị badge "Đã ẩn"
         };
         transactions.push(virtualTx);
       }
@@ -574,13 +577,19 @@ export async function GET(request: Request) {
           const targetDateStr = dayjs().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD");
           const startOfTargetDay = dayjs.tz(targetDateStr, "Asia/Ho_Chi_Minh").startOf("day").toDate();
           const endOfTargetDay = dayjs.tz(targetDateStr, "Asia/Ho_Chi_Minh").endOf("day").toDate();
+          
           const isHiddenToday = await Revenue.findOne({
             code: dbCustomer.code,
             arrivalDate: { $gte: startOfTargetDay, $lte: endOfTargetDay },
             isHidden: true
           });
 
-          if (!isHiddenToday && (!allowedGroups || allowedGroups.length === 0 || allowedGroups.includes(groupValue))) {
+          const isHidden = !!isHiddenToday;
+
+          // Nếu ở chế độ trình chiếu (presentationMode = true) và bị ẩn thì bỏ qua hẳn
+          if (presentationMode && isHidden) {
+            // Không chèn
+          } else if (!allowedGroups || allowedGroups.length === 0 || allowedGroups.includes(groupValue)) {
             const virtualTx = {
               _id: `virtual_${dbCustomer.code}_${targetDateStr}`,
               code: dbCustomer.code,
@@ -597,7 +606,8 @@ export async function GET(request: Request) {
               arrivalDate: dbCustomer.createdAt || new Date(),
               createdAt: dbCustomer.createdAt || new Date(),
               updatedAt: dbCustomer.updatedAt || new Date(),
-              isVirtual: true
+              isVirtual: true,
+              isHidden: isHidden // Gán thuộc tính isHidden thực tế để frontend hiển thị badge "Đã ẩn"
             };
             transactions.unshift(virtualTx);
           }
