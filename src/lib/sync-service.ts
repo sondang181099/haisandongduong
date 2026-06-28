@@ -80,7 +80,7 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
   if (!invoices || invoices.length === 0) return 0;
 
   // Bước 0: Lấy nhanh thông tin nhóm của các mã khách hàng trong danh sách hóa đơn
-  const codes = Array.from(new Set(invoices.map(inv => inv.customerCode).filter(Boolean)));
+  const codes = Array.from(new Set(invoices.map(inv => inv.customerCode ? inv.customerCode.split("{")[0].trim() : "").filter(Boolean)));
   const codeToGroups: Record<string, string> = {};
   if (codes.length > 0) {
     const records = await Transaction.find(
@@ -135,11 +135,14 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
       // Optimization: Bỏ qua hóa đơn khách lẻ vãng lai không có mã đoàn
       continue;
     }
-    const customerCode = rawCode.toUpperCase().includes("DEL") ? rawCode.trim() : rawCode.split("{")[0].trim();
+    const customerCode = rawCode.split("{")[0].trim();
+    const isDeleted = rawCode.toUpperCase().includes("DEL");
     
     const dateKey = dayjs.tz(inv.createdDate, "Asia/Ho_Chi_Minh").format("YYYY-MM-DD");
     
-    const invPlate = invoiceToExistingPlate[inv.code] || inv.customerName || customerCode;
+    const rawPlate = inv.customerName || customerCode;
+    const cleanPlateVal = rawPlate.split("{")[0].trim();
+    const invPlate = invoiceToExistingPlate[inv.code] || cleanPlateVal;
     const invPlateClean = cleanPlate(invPlate);
 
     const existingGroups = codeToGroups[customerCode] || "";
@@ -162,7 +165,8 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
         totalRevenue: 0,
         totalProfit: 0,
         invoiceCodes: [],
-        cancelledCodes: []
+        cancelledCodes: [],
+        isDeleted
       };
     }
 
@@ -176,6 +180,9 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
       groupsMap[groupKey].totalRevenue += revenue;
       groupsMap[groupKey].invoiceCodes.push(inv.code);
       groupsMap[groupKey].invoices.push(inv);
+    }
+    if (isDeleted) {
+      groupsMap[groupKey].isDeleted = true;
     }
   }
 
@@ -201,40 +208,54 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
       let customerGroups = "Khách lẻ."; 
       let licensePlate = latestInv?.customerName || group.plate || "Khách lẻ.";
       let customerId = latestInv?.customerId || null;
-      let isCustomerDeleted = latestInv?.customerCode?.includes("{DEL}") || false;
+      let isCustomerDeleted = latestInv?.customerCode?.includes("{DEL}") || !!group.isDeleted || false;
       
       if (group.customerCode && group.customerCode !== "Khách lẻ") {
         try {
-          const cleanCode = group.customerCode.toUpperCase().includes("DEL") ? group.customerCode.trim() : group.customerCode.split("{")[0];
-          const localRecord = await Transaction.findOne({ 
-            code: { $regex: `^${escapeRegExp(cleanCode)}$`, $options: "i" } 
-          }).sort({ updatedAt: -1 }).lean();
+          const cleanCode = group.customerCode.split("{")[0].trim();
           
-          if (localRecord && localRecord.groups && !localRecord.isCustomerDeleted) {
-            licensePlate = localRecord.licensePlate || licensePlate;
-            customerGroups = localRecord.groups || customerGroups;
-            customerId = localRecord.customerId || customerId;
-            isCustomerDeleted = false;
-          } else {
-            console.log(`[Sync] Local record not found or was deleted for ${cleanCode}, fetching from KiotViet...`);
-            const searchParam = `code=${encodeURIComponent(cleanCode)}&includeCustomerGroup=true`;
-            const custRes = await fetch(`https://public.kiotapi.com/customers?${searchParam}`, {
-              headers: {
-                "Authorization": `Bearer ${accessToken}`,
-                "Retailer": RETAILER_CODE,
-              },
-            });
+          // Tra cứu thông tin từ bảng customers nội bộ trước (nơi đã được nạp tĩnh từ Excel)
+          const { Customer } = await import("../models/Customer");
+          const localCust = await Customer.findOne({
+            code: { $regex: `^${escapeRegExp(cleanCode)}$`, $options: "i" }
+          }).lean();
 
-            if (custRes.ok) {
-              const custData = await custRes.json();
-              const customer = custData.data?.find((c: any) => c.code === cleanCode) || custData.data?.[0];
-              
-              if (customer) {
-                const bestName = customer.licensePlate || (customer.name && !customer.name.includes("{DEL}") ? customer.name : null);
-                if (bestName) licensePlate = bestName;
-                if (customer.groups) customerGroups = customer.groups;
-                customerId = customer.id || customerId;
-                if (customer.name?.includes("{DEL}")) isCustomerDeleted = true;
+          if (localCust) {
+            licensePlate = localCust.name || licensePlate;
+            customerGroups = localCust.groups || customerGroups;
+            customerId = localCust.customerId || customerId;
+            isCustomerDeleted = localCust.isDeleted || false;
+          } else {
+            const localRecord = await Transaction.findOne({ 
+              code: { $regex: `^${escapeRegExp(cleanCode)}$`, $options: "i" } 
+            }).sort({ updatedAt: -1 }).lean();
+            
+            if (localRecord && localRecord.groups && !localRecord.isCustomerDeleted) {
+              licensePlate = localRecord.licensePlate || licensePlate;
+              customerGroups = localRecord.groups || customerGroups;
+              customerId = localRecord.customerId || customerId;
+              isCustomerDeleted = false;
+            } else {
+              console.log(`[Sync] Local record not found or was deleted for ${cleanCode}, fetching from KiotViet...`);
+              const searchParam = `code=${encodeURIComponent(cleanCode)}&includeCustomerGroup=true`;
+              const custRes = await fetch(`https://public.kiotapi.com/customers?${searchParam}`, {
+                headers: {
+                  "Authorization": `Bearer ${accessToken}`,
+                  "Retailer": RETAILER_CODE,
+                },
+              });
+
+              if (custRes.ok) {
+                const custData = await custRes.json();
+                const customer = custData.data?.find((c: any) => c.code === cleanCode) || custData.data?.[0];
+                
+                if (customer) {
+                  const bestName = customer.licensePlate || (customer.name && !customer.name.includes("{DEL}") ? customer.name : null);
+                  if (bestName) licensePlate = bestName;
+                  if (customer.groups) customerGroups = customer.groups;
+                  customerId = customer.id || customerId;
+                  if (customer.name?.includes("{DEL}")) isCustomerDeleted = true;
+                }
               }
             }
           }
@@ -334,7 +355,7 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
               groups: customerGroups,
               brands,
               customerId,
-              isCustomerDeleted: isCustomerDeleted,
+              isCustomerDeleted: !!existingTx.isCustomerDeleted || isCustomerDeleted,
               revenue: totalRevenue, 
               profit: totalProfit,
               ...(!existingTx.arrivalDate || arrivalDate > existingTx.arrivalDate ? { arrivalDate, customerModifiedDate: arrivalDate } : {}),
@@ -634,20 +655,8 @@ export async function getInvoicesByCustomerCode(code: string) {
     const { accessToken } = kiotTokenRecord;
     const fromDate = dayjs().tz("Asia/Ho_Chi_Minh").startOf("day").format("YYYY-MM-DDTHH:mm:ss");
 
-    // Lấy thông tin khách hàng để có ID
-    const custRes = await fetch(`https://public.kiotapi.com/customers?code=${code}`, {
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Retailer": RETAILER_CODE
-      }
-    });
-    const custJson = await custRes.json();
-    if (!custJson.data || custJson.data.length === 0) return [];
-
-    const customerId = custJson.data[0].id;
-
-    // Lấy hóa đơn
-    const invRes = await fetch(`https://public.kiotapi.com/invoices?customerId=${customerId}&lastModifiedFrom=${fromDate}&includeInvoiceDetails=true`, {
+    // Lấy hóa đơn trực tiếp bằng customerCode vì KiotViet API /invoices không hỗ trợ tham số customerId
+    const invRes = await fetch(`https://public.kiotapi.com/invoices?customerCode=${code}&lastModifiedFrom=${fromDate}&includeInvoiceDetails=true`, {
       headers: {
         "Authorization": `Bearer ${accessToken}`,
         "Retailer": RETAILER_CODE
@@ -666,7 +675,27 @@ export async function getInvoicesByCustomerCode(code: string) {
       }
     }
 
-    return invoices;
+    // Ánh xạ (Map) dữ liệu hóa đơn thô từ KiotViet sang cấu trúc UI mong đợi (gộp tên sản phẩm và chuẩn hóa ngày bán)
+    const mappedInvoices = invoices.map((inv: any) => {
+      const productNames = (inv.invoiceDetails || []).map((d: any) => d.productName).join(", ");
+      return {
+        code: inv.code,
+        purchaseDate: inv.purchaseDate || inv.createdDate,
+        soldByName: inv.soldByName || "Hệ thống",
+        total: inv.total || 0,
+        mainProducts: productNames,
+        details: (inv.invoiceDetails || []).map((d: any) => ({
+          productCode: d.productCode,
+          productName: d.productName,
+          quantity: d.quantity,
+          price: d.price,
+          discount: d.discount,
+          subTotal: d.subTotal || (d.quantity * d.price)
+        }))
+      };
+    });
+
+    return mappedInvoices;
 
   } catch (error) {
     console.error("[Sync Service] getInvoicesByCustomerCode error:", error);

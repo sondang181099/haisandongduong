@@ -28,10 +28,10 @@ export async function POST(request: Request) {
       const invoicesMatch = stdout.match(/Invoices processed: (\d+)/);
       const unitsMatch = stdout.match(/Groups updated: (\d+)/);
       
-      // Phát tín hiệu cập nhật qua WebSocket
-      if (global.io) {
-        global.io.emit("revenue-updated");
-      }
+      // Phát tín hiệu cập nhật qua WebSocket bằng helper đã cài debounce
+      const { emitRevenueUpdate } = require("@/lib/socket-server");
+      emitRevenueUpdate();
+
 
       return NextResponse.json({
         message: "Python Sync completed successfully",

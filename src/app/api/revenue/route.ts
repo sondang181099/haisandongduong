@@ -45,6 +45,13 @@ export async function GET(request: Request) {
 
     await connectDB();
 
+    // Tự động tạo index cho bảng snapshot customers_original nếu chưa có để tối ưu hóa lookup
+    try {
+      Invoice.db.collection("customers_original").createIndex({ customerId: 1, createdAt: -1 }).catch(() => {});
+    } catch (e) {
+      console.error("Error creating snapshot indexes:", e);
+    }
+
     // Lấy quyền trực tiếp từ database để có hiệu lực ngay lập tức
     const roleData = await Role.findOne({ key: userRole });
     const viewUnpaid = roleData ? !!roleData.viewUnpaid : false;
@@ -96,56 +103,7 @@ export async function GET(request: Request) {
     const pipeline: any[] = [
       { $match: invoiceMatch },
       {
-        $lookup: {
-          from: "customers",
-          let: { custCode: "$customerCode" },
-          pipeline: [
-            { $match: { $expr: { $eq: ["$code", "$$custCode"] } } },
-            { $sort: { createdAt: -1 } },
-            { $limit: 1 }
-          ],
-          as: "customerInfo"
-        }
-      },
-      {
-        $lookup: {
-          from: "customers_original",
-          let: { custCode: "$customerCode" },
-          pipeline: [
-            { $match: { $expr: { $eq: ["$code", "$$custCode"] } } },
-            { $sort: { createdAt: -1 } },
-            { $limit: 1 }
-          ],
-          as: "customerOriginalInfo"
-        }
-      },
-      {
         $addFields: {
-          customer: { $arrayElemAt: ["$customerInfo", 0] },
-          customerOriginal: { $arrayElemAt: ["$customerOriginalInfo", 0] }
-        }
-      },
-      {
-        $addFields: {
-          rawPlate: {
-            $cond: {
-              if: {
-                $and: [
-                  { $ne: ["$customerName", null] },
-                  { $ne: ["$customerName", ""] },
-                  { $ne: ["$customerName", "Khách lẻ"] },
-                  { $ne: ["$customerName", "Khách lẻ."] }
-                ]
-              },
-              then: "$customerName",
-              else: {
-                $ifNull: [
-                  "$customer.name",
-                  { $ifNull: ["$customerOriginal.name", "$customerCode"] }
-                ]
-              }
-            }
-          },
           dateKey: {
             $dateToString: { format: "%Y-%m-%d", date: "$createdDate", timezone: "Asia/Ho_Chi_Minh" }
           }
@@ -154,10 +112,11 @@ export async function GET(request: Request) {
       {
         $group: {
           _id: {
-            code: "$customerCode",
-            dateKey: "$dateKey",
-            plate: "$rawPlate"
+            customerId: "$customerId",
+            dateKey: "$dateKey"
           },
+          customerNames: { $addToSet: "$customerName" },
+          customerCode: { $first: "$customerCode" },
           invoices: {
             $push: {
               code: "$code",
@@ -186,13 +145,84 @@ export async function GET(request: Request) {
       {
         $project: {
           _id: 0,
-          code: "$_id.code",
+          customerId: "$_id.customerId",
+          code: "$customerCode",
           dateKey: "$_id.dateKey",
-          plate: "$_id.plate",
           invoiceCode: { $cond: [{ $eq: [{ $size: "$invoices" }, 1] }, { $arrayElemAt: ["$invoices.code", 0] }, null] },
           revenue: 1,
           arrivalDate: 1,
-          childInvoices: "$invoices"
+          childInvoices: "$invoices",
+          customerNames: 1
+        }
+      },
+      {
+        $lookup: {
+          from: "customers",
+          let: { custId: "$customerId" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$customerId", "$$custId"] } } },
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 }
+          ],
+          as: "customerInfo"
+        }
+      },
+      {
+        $lookup: {
+          from: "customers_original",
+          let: { custId: "$customerId" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$customerId", "$$custId"] } } },
+            { $sort: { createdAt: -1 } },
+            { $limit: 1 }
+          ],
+          as: "customerOriginalInfo"
+        }
+      },
+      {
+        $addFields: {
+          customer: { $arrayElemAt: ["$customerInfo", 0] },
+          customerOriginal: { $arrayElemAt: ["$customerOriginalInfo", 0] }
+        }
+      },
+      {
+        $addFields: {
+          plate: {
+            $let: {
+              vars: {
+                invoicePlate: {
+                  $arrayElemAt: [
+                    {
+                      $filter: {
+                        input: "$customerNames",
+                        as: "name",
+                        cond: {
+                          $and: [
+                            { $ne: ["$$name", null] },
+                            { $ne: ["$$name", ""] },
+                            { $ne: ["$$name", "Khách lẻ"] },
+                            { $ne: ["$$name", "Khách lẻ."] }
+                          ]
+                        }
+                      }
+                    },
+                    0
+                  ]
+                }
+              },
+              in: {
+                $ifNull: [
+                  "$$invoicePlate",
+                  {
+                    $ifNull: [
+                      "$customer.name",
+                      { $ifNull: ["$customerOriginal.name", "$code"] }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
         }
       },
       {
@@ -230,33 +260,7 @@ export async function GET(request: Request) {
         }
       },
       {
-        $lookup: {
-          from: "customers",
-          let: { custCode: "$code" },
-          pipeline: [
-            { $match: { $expr: { $eq: ["$code", "$$custCode"] } } },
-            { $sort: { createdAt: -1 } },
-            { $limit: 1 }
-          ],
-          as: "customerInfo"
-        }
-      },
-      {
-        $lookup: {
-          from: "customers_original",
-          let: { custCode: "$code" },
-          pipeline: [
-            { $match: { $expr: { $eq: ["$code", "$$custCode"] } } },
-            { $sort: { createdAt: -1 } },
-            { $limit: 1 }
-          ],
-          as: "customerOriginalInfo"
-        }
-      },
-      {
         $addFields: {
-          customer: { $arrayElemAt: ["$customerInfo", 0] },
-          customerOriginal: { $arrayElemAt: ["$customerOriginalInfo", 0] },
           rev: { $arrayElemAt: ["$revenueInfo", 0] }
         }
       },

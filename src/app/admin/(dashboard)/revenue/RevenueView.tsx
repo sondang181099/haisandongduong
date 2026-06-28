@@ -5,7 +5,7 @@ import {
   Box, Button, Group, TextInput, Title, Table, Text, Badge,
   Card, ScrollArea, Loader, Center, Select, MultiSelect, Stack,
   NumberFormatter, Pagination, Switch, Modal, ActionIcon, NumberInput, SegmentedControl,
-  SimpleGrid, Divider, Grid,
+  SimpleGrid, Divider, Grid, Tooltip,
 } from "@mantine/core";
 import { useMediaQuery, useDisclosure } from "@mantine/hooks";
 import { DatePickerInput } from "@mantine/dates";
@@ -15,6 +15,7 @@ import {
   IconSearch, IconRefresh, IconCurrencyDong, IconCalculator, IconTrash, IconArrowBackUp, IconFileSpreadsheet, IconEye, IconEyeOff, IconTable
 } from "@tabler/icons-react";
 import dayjs from "dayjs";
+import "dayjs/locale/vi";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 import { useSocket } from "@/hooks/useSocket";
@@ -31,6 +32,10 @@ import { calculateProfit } from "@/lib/commission";
 import { VEHICLE_TYPES } from "@/lib/constants";
 import { getReducedRevenue, type ReductionRule, type ReductionConfig } from "@/lib/reduction";
 import { usePagePermission } from "@/hooks/usePagePermission";
+const stripDelSuffix = (str: string) => {
+  if (!str) return "";
+  return str.replace(/[\{\(]DEL\d*[\}\)]/gi, "").trim();
+};
 
 interface Transaction {
   _id: string;
@@ -170,6 +175,7 @@ export function RevenueView({ title }: RevenueViewProps) {
   const [infoTx, setInfoTx] = useState<Transaction | null>(null);
   const [invoiceDetails, setInvoiceDetails] = useState<any[]>([]);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
 
   const handlePaidDateChange = (value: any) => {
     if (!value) return setPaidDateAt(null);
@@ -808,6 +814,8 @@ export function RevenueView({ title }: RevenueViewProps) {
                   value={paidDateAt ? new Date(paidDateAt) : null}
                   onChange={handlePaidDateChange}
                   clearable
+                  valueFormat="DD/MM/YYYY"
+                  locale="vi"
                   size="xs"
                 />
                 <DatePickerInput
@@ -815,6 +823,8 @@ export function RevenueView({ title }: RevenueViewProps) {
                   value={arrivalDate ? new Date(arrivalDate) : null}
                   onChange={handleArrivalDateChange}
                   clearable
+                  valueFormat="DD/MM/YYYY"
+                  locale="vi"
                   size="xs"
                 />
                 {role === "admin" && (
@@ -898,6 +908,8 @@ export function RevenueView({ title }: RevenueViewProps) {
                 value={paidDateAt ? new Date(paidDateAt) : null}
                 onChange={handlePaidDateChange}
                 clearable
+                valueFormat="DD/MM/YYYY"
+                locale="vi"
                 style={{ minWidth: 200 }}
               />
               <DatePickerInput
@@ -905,6 +917,8 @@ export function RevenueView({ title }: RevenueViewProps) {
                 value={arrivalDate ? new Date(arrivalDate) : null}
                 onChange={handleArrivalDateChange}
                 clearable
+                valueFormat="DD/MM/YYYY"
+                locale="vi"
                 style={{ minWidth: 200 }}
               />
               {role === "admin" && (
@@ -966,9 +980,9 @@ export function RevenueView({ title }: RevenueViewProps) {
                       style={{ cursor: "pointer", textDecoration: "underline" }}
                       onClick={() => openInfoModal(t)}
                     >
-                      {t.code}
+                      {stripDelSuffix(t.code)}
                     </Text>
-                    <Text size="xs" c="dimmed">{t.vehicleNumber || t.licensePlate} • {t.groups || "—"}</Text>
+                    <Text size="xs" c="dimmed">{stripDelSuffix(t.vehicleNumber || t.licensePlate)} • {t.groups || "—"}</Text>
                   </Box>
                   <Group gap={6}>
                     {!isDriverRole && (
@@ -1175,10 +1189,10 @@ export function RevenueView({ title }: RevenueViewProps) {
                             style={{ cursor: "pointer", textDecoration: "underline" }}
                             onClick={() => openInfoModal(t)}
                           >
-                            {t.code}
+                            {stripDelSuffix(t.code)}
                           </Text>
                         </Table.Td>
-                        <Table.Td style={{ whiteSpace: "nowrap" }}>{t.vehicleNumber || t.licensePlate}</Table.Td>
+                        <Table.Td style={{ whiteSpace: "nowrap" }}>{stripDelSuffix(t.vehicleNumber || t.licensePlate)}</Table.Td>
                         <Table.Td style={{ whiteSpace: "nowrap" }}>{t.groups || "—"}</Table.Td>
                         {role === "admin" && showOriginalRevenue && (
                           <Table.Td style={{ textAlign: "right" }}>
@@ -1196,7 +1210,7 @@ export function RevenueView({ title }: RevenueViewProps) {
                         )}
                         <Table.Td style={{ textAlign: "right" }}>
                           <Text component="div" size="sm" fw={600} c="blue.7" style={{ fontVariantNumeric: "tabular-nums", display: "inline-flex", alignItems: "center", gap: "4px" }}>
-                            <NumberFormatter value={(Number(t.status) === 1 && typeof t.reducedRevenueAtPayment === 'number') ? t.reducedRevenueAtPayment : getReducedRevenue(t.isFrozen ? (t.frozenRevenue ?? t.revenue) : t.revenue, t.groups, reductionRules)} thousandSeparator="." decimalSeparator="," />
+                            <NumberFormatter value={((Number(t.status) === 1 && typeof t.reducedRevenueAtPayment === 'number') ? t.reducedRevenueAtPayment : getReducedRevenue(t.isFrozen ? (t.frozenRevenue ?? t.revenue) : t.revenue, t.groups, reductionRules))} thousandSeparator="." decimalSeparator="," />
                             {t.isFrozen && (
                               <Badge color="red" variant="light" size="xs" style={{ textTransform: "none" }}>Dừng</Badge>
                             )}
@@ -1477,18 +1491,25 @@ export function RevenueView({ title }: RevenueViewProps) {
                       <Group justify="space-between" align="center" p="md" style={{ borderBottom: "1px solid #f1f3f5" }} bg="gray.0">
                         <Text size="sm" c="dimmed" fw={500}>Mã đoàn</Text>
                         <Badge size="lg" radius="md" variant="light" color="blue" h={32} style={{ display: 'flex', alignItems: 'center' }}>
-                          {infoTx.code}
+                          {stripDelSuffix(infoTx.code)}
                         </Badge>
                       </Group>
                       
                       <Group justify="space-between" align="center" p="md" style={{ borderBottom: "1px solid #f1f3f5" }}>
                         <Text size="sm" c="dimmed" fw={500}>Biển số / Xe</Text>
-                        <Text size="sm" fw={600} c="gray.8">{infoTx.vehicleNumber || infoTx.licensePlate}</Text>
+                        <Text size="sm" fw={600} c="gray.8">{stripDelSuffix(infoTx.vehicleNumber || infoTx.licensePlate)}</Text>
+                      </Group>
+                      
+                      <Group justify="space-between" align="center" p="md" style={{ borderBottom: "1px solid #f1f3f5" }}>
+                        <Text size="sm" c="dimmed" fw={500}>Doanh thu</Text>
+                        <Text component="div" size="sm" fw={800} c="blue.7" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                          <NumberFormatter value={infoTx.revenue} thousandSeparator="." decimalSeparator="," />
+                        </Text>
                       </Group>
 
                       <Group justify="space-between" align="center" p="md" style={{ borderBottom: "1px solid #f1f3f5" }}>
                         <Text size="sm" c="dimmed" fw={500}>Doanh thu giảm</Text>
-                        <Text component="div" size="sm" fw={600} c="blue.7" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                        <Text component="div" size="sm" fw={500} c="gray.7" style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}>
                           <NumberFormatter value={(Number(infoTx.status) === 1 && typeof infoTx.reducedRevenueAtPayment === 'number') ? infoTx.reducedRevenueAtPayment : getReducedRevenue(infoTx.isFrozen ? (infoTx.frozenRevenue ?? infoTx.revenue) : infoTx.revenue, infoTx.groups, reductionRules)} thousandSeparator="." decimalSeparator="," />
                           {infoTx.isFrozen && (
                             <Badge color="red" variant="light" size="xs" style={{ textTransform: "none" }}>Dừng</Badge>
@@ -1564,7 +1585,7 @@ export function RevenueView({ title }: RevenueViewProps) {
                                 <Table.Td style={{ whiteSpace: "nowrap" }}>
                                   <Group gap={6} wrap="nowrap">
                                     <IconFileSpreadsheet size={16} color="#4dabf7" style={{ flexShrink: 0 }} />
-                                    <Text size="sm" fw={600} c="blue.6" style={{ cursor: "pointer" }}>
+                                    <Text size="sm" fw={600} c="blue.6" style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => setSelectedInvoice(inv)}>
                                       {inv.code}{infoTx.status === 1 && infoTx.paidDateAt && dayjs(inv.purchaseDate).isAfter(dayjs(infoTx.paidDateAt)) ? "-s" : ""}
                                     </Text>
                                   </Group>
@@ -1572,9 +1593,11 @@ export function RevenueView({ title }: RevenueViewProps) {
                                 <Table.Td style={{ whiteSpace: "nowrap" }}><Text size="sm" fw={500} c="gray.7">{dayjs(inv.purchaseDate).format("HH:mm:ss")}</Text></Table.Td>
                                 <Table.Td style={{ whiteSpace: "nowrap" }}><Text size="sm" c="gray.8" fw={500}>{inv.soldByName || "—"}</Text></Table.Td>
                                 <Table.Td>
-                                  <Text size="sm" c="gray.7" style={{ maxWidth: 250, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                    {inv.mainProducts || "—"}
-                                  </Text>
+                                  <Tooltip label={inv.mainProducts || "—"} multiline w={300} withArrow>
+                                    <Text size="sm" c="gray.7" style={{ maxWidth: 250, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help" }}>
+                                      {inv.mainProducts || "—"}
+                                    </Text>
+                                  </Tooltip>
                                 </Table.Td>
                                 <Table.Td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                                   <Text fw={700} size="sm" color="gray.9" style={{ fontVariantNumeric: "tabular-nums" }}>
@@ -1640,7 +1663,7 @@ export function RevenueView({ title }: RevenueViewProps) {
           <Stack gap="md">
             <Box p="sm" bg="gray.0" style={{ borderRadius: '8px' }}>
               <Text size="xs" c="dimmed" fw={600} tt="uppercase">Đoàn xe</Text>
-              <Text fw={700} size="sm">{selectedTransaction.code} ({selectedTransaction.vehicleNumber || selectedTransaction.licensePlate})</Text>
+              <Text fw={700} size="sm">{stripDelSuffix(selectedTransaction.code)} ({stripDelSuffix(selectedTransaction.vehicleNumber || selectedTransaction.licensePlate)})</Text>
             </Box>
 
             <NumberInput
@@ -1753,6 +1776,73 @@ export function RevenueView({ title }: RevenueViewProps) {
             </Button>
           </Group>
         </Stack>
+      </Modal>
+      {/* Modal Chi tiết sản phẩm trong hóa đơn lẻ */}
+      <Modal
+        opened={!!selectedInvoice}
+        onClose={() => setSelectedInvoice(null)}
+        title={<Text fw={700} size="lg">Chi tiết hóa đơn [{selectedInvoice?.code}]</Text>}
+        centered
+        radius="md"
+        size="lg"
+      >
+        {selectedInvoice && (
+          <Stack gap="md">
+            <Group justify="space-between" p="xs" bg="gray.0" style={{ borderRadius: '6px' }}>
+              <Text size="xs" c="dimmed">Nhân viên: <Text span fw={600} c="gray.8">{selectedInvoice.soldByName}</Text></Text>
+              <Text size="xs" c="dimmed">Giờ bán: <Text span fw={600} c="gray.8">{dayjs(selectedInvoice.purchaseDate).format("HH:mm:ss DD/MM/YYYY")}</Text></Text>
+            </Group>
+
+            <ScrollArea.Autosize mah={400} type="auto">
+              <Table striped highlightOnHover withTableBorder withColumnBorders>
+                <Table.Thead style={{ background: "#f8f9fa" }}>
+                  <Table.Tr>
+                    <Table.Th style={{ width: "20%" }}>Mã SP</Table.Th>
+                    <Table.Th style={{ width: "45%" }}>Tên sản phẩm</Table.Th>
+                    <Table.Th style={{ width: "10%", textAlign: "center" }}>SL</Table.Th>
+                    <Table.Th style={{ width: "12%", textAlign: "right" }}>Đơn giá</Table.Th>
+                    <Table.Th style={{ width: "13%", textAlign: "right" }}>Thành tiền</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {selectedInvoice.details && selectedInvoice.details.length > 0 ? (
+                    selectedInvoice.details.map((item: any, idx: number) => (
+                      <Table.Tr key={idx}>
+                        <Table.Td style={{ wordBreak: "break-all" }}>{item.productCode}</Table.Td>
+                        <Table.Td style={{ whiteSpace: "normal", wordBreak: "break-word" }}>{item.productName}</Table.Td>
+                        <Table.Td style={{ textAlign: "center" }}>{item.quantity}</Table.Td>
+                        <Table.Td style={{ textAlign: "right" }}>
+                          <NumberFormatter value={item.price} thousandSeparator="." decimalSeparator="," />
+                        </Table.Td>
+                        <Table.Td style={{ textAlign: "right" }}>
+                          <NumberFormatter value={item.subTotal} thousandSeparator="." decimalSeparator="," />
+                        </Table.Td>
+                      </Table.Tr>
+                    ))
+                  ) : (
+                    <Table.Tr>
+                      <Table.Td colSpan={5}>
+                        <Center py="md">
+                          <Text size="sm" c="dimmed">Không có chi tiết sản phẩm nào</Text>
+                        </Center>
+                      </Table.Td>
+                    </Table.Tr>
+                  )}
+                </Table.Tbody>
+              </Table>
+            </ScrollArea.Autosize>
+
+            <Group justify="flex-end" mt="xs">
+              <Text fw={800} size="md" c="blue.7">
+                Tổng cộng: <NumberFormatter value={selectedInvoice.total} thousandSeparator="." decimalSeparator="," suffix=" đ" />
+              </Text>
+            </Group>
+
+            <Group justify="flex-end" mt="xs">
+              <Button variant="light" color="gray" onClick={() => setSelectedInvoice(null)}>Đóng</Button>
+            </Group>
+          </Stack>
+        )}
       </Modal>
 
     </Box>

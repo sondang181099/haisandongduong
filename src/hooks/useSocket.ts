@@ -11,15 +11,14 @@ export const useSocket = () => {
     // Xác định URL của socket server (ưu tiên từ env PORT=3000)
     // Tự động xác định URL: ưu tiên window.location.origin nếu đang chạy local 
     // để tránh sai lệch IP giữa các máy/môi trường phát triển.
-    let socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "";
-    
-    // Nếu ở môi trường localhost, ưu tiên dùng chính origin hiện tại
-    if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
-      socketUrl = ""; // Socket.io sẽ dùng window.location.origin
+    // Luôn sử dụng origin hiện tại của trình duyệt để tránh sai lệch IP/Domain khi kết nối Socket.io
+    let socketUrl = "";
+    if (typeof window !== "undefined") {
+      socketUrl = window.location.origin;
     }
 
     const socketInstance = io(socketUrl, {
-      reconnectionAttempts: 5,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 2000,
       transports: ["websocket", "polling"],
       timeout: 10000,

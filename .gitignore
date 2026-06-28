@@ -19,6 +19,7 @@
 
 # production
 /build
+/docker/*.tar
 
 # misc
 .DS_Store

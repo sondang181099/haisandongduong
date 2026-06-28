@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   app:
+    image: haisandongduong-app:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -15,7 +16,14 @@ services:
       - PORT=4000
       - NEXTAUTH_URL=http://techinfom.com/
       - NEXT_PUBLIC_SOCKET_URL=http://techinfom.com/
+      # Giới hạn Node.js heap tối đa 512MB (để còn RAM cho Python sync + OS)
+      - NODE_OPTIONS=--max-old-space-size=512
     restart: always
+    # Giới hạn tài nguyên cho máy chủ 2 CPU / 2GB RAM
+    # (cú pháp docker-compose standalone, không cần Swarm)
+    mem_limit: 1400m          # Tối đa 1.4GB RAM (để Python + OS còn ~600MB)
+    memswap_limit: 1400m      # Không dùng swap (tránh chậm)
+    cpus: '1.8'               # Tối đa 1.8 core (để OS còn 0.2 core)
     logging:
       driver: "json-file"
       options:

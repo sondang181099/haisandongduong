@@ -39,17 +39,29 @@ export const initSocket = (httpServer: HTTPServer) => {
   return io;
 };
 
+let debounceTimeout: NodeJS.Timeout | null = null;
+
 // Hàm tiện ích để broadcast sự kiện từ API
 export const emitRevenueUpdate = (excludeSocketId?: string) => {
-  if (global.io) {
-    if (excludeSocketId) {
-      console.log(`Emitting revenue-updated event, excluding socket: ${excludeSocketId}...`);
-      global.io.except(excludeSocketId).emit("revenue-updated");
-    } else {
-      console.log("Emitting revenue-updated event...");
-      global.io.emit("revenue-updated");
+  const ioInstance = global.io;
+  if (ioInstance) {
+    if (debounceTimeout) {
+      clearTimeout(debounceTimeout);
     }
+
+    debounceTimeout = setTimeout(() => {
+      if (excludeSocketId) {
+        console.log(`Emitting revenue-updated event, excluding socket: ${excludeSocketId}...`);
+        ioInstance.except(excludeSocketId).emit("revenue-updated");
+      } else {
+        console.log("Emitting revenue-updated event...");
+        ioInstance.emit("revenue-updated");
+      }
+      debounceTimeout = null;
+    }, 1500); // Trì hoãn 1.5 giây để chờ Python chuẩn hóa hoàn tất DB
   } else {
     console.warn("Socket.io not initialized, cannot emit event");
   }
 };
+
+

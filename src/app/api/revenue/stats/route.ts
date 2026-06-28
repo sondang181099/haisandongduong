@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
-import { Transaction } from "@/models/Transaction";
+import { Revenue } from "@/models/Revenue";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 
@@ -16,7 +16,7 @@ export async function GET(request: Request) {
     await connectDB();
 
     // Lấy dữ liệu doanh thu nhóm theo tháng
-    const stats = await Transaction.aggregate([
+    const stats = await Revenue.aggregate([
       {
         $match: {
           customerModifiedDate: {

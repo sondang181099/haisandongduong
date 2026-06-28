@@ -1,9 +1,15 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
-import { Transaction } from "@/models/Transaction";
+import { Revenue } from "@/models/Revenue";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { emitRevenueUpdate } from "@/lib/socket-server";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+import timezone from "dayjs/plugin/timezone";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -21,7 +27,49 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 
     await connectDB();
 
-    const transaction = await Transaction.findById(id);
+    let transaction;
+    if (id.startsWith("virtual_")) {
+      const parts = id.replace("virtual_", "").split("_");
+      const code = parts[0];
+      const dateKey = parts[1];
+      const invoiceCode = parts[2] || undefined;
+      
+      const { Customer } = await import("@/models/Customer");
+      const escapedCode = code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const dbCustomer = await Customer.findOne({
+        code: { $regex: `^${escapedCode}$`, $options: "i" }
+      });
+      
+      const startOfDay = dayjs.tz(dateKey, "Asia/Ho_Chi_Minh").startOf("day").toDate();
+      const endOfDay = dayjs.tz(dateKey, "Asia/Ho_Chi_Minh").endOf("day").toDate();
+      
+      const { Invoice } = await import("@/models/Invoice");
+      const invoices = await Invoice.find({
+        customerCode: code,
+        createdDate: { $gte: startOfDay, $lte: endOfDay },
+        status: 1
+      });
+      const totalRevenue = invoices.reduce((sum, inv) => sum + inv.total, 0);
+      const invoicePlate = invoices.length > 0 ? (invoices[0].customerName || dbCustomer?.licensePlate) : dbCustomer?.licensePlate;
+      
+      transaction = await Revenue.create({
+        code: code,
+        invoiceCode: invoiceCode,
+        arrivalDate: startOfDay,
+        customerModifiedDate: startOfDay,
+        licensePlate: invoicePlate || "Chưa xác định",
+        vehicleNumber: invoicePlate || "Chưa xác định",
+        groups: dbCustomer?.groups || "Khách lẻ.",
+        revenue: totalRevenue,
+        profit: 0,
+        status: 0,
+        paymentMethod: 0,
+        customerId: dbCustomer?.customerId
+      });
+    } else {
+      transaction = await Revenue.findById(id);
+    }
+
     if (!transaction) {
       return NextResponse.json({ error: "Giao dịch không tồn tại" }, { status: 404 });
     }

@@ -21,6 +21,7 @@ export async function PUT(
       fullname, 
       role, 
       identity, 
+      allowedGroups,
       cars, 
       bankName, 
       bankAccount, 
@@ -38,6 +39,7 @@ export async function PUT(
     if (fullname) updateData.fullname = fullname;
     if (role) updateData.role = role;
     if (identity !== undefined) updateData.identity = identity;
+    if (allowedGroups !== undefined) updateData.allowedGroups = allowedGroups;
     
     if (cars !== undefined) {
       updateData.cars = (cars || []).map((c: any) => {

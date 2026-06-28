@@ -6,6 +6,7 @@ export interface IUser extends Document {
   fullname: string;
   role: string;
   identity?: string;
+  allowedGroups?: string[];
   cars?: Array<{
     licensePlate: string;
     brands?: string[];
@@ -33,6 +34,7 @@ const UserSchema = new Schema<IUser>(
       default: "Tài xế",
     },
     identity: { type: String },
+    allowedGroups: { type: [String], default: [] },
     cars: { type: [Schema.Types.Mixed], default: [] },
     payment: {
       bankBin: { type: String, default: "" },

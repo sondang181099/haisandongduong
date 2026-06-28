@@ -30,9 +30,10 @@ app.prepare().then(() => {
   // Tích hợp Socket.io
   initSocket(httpServer);
 
-  // --- Tự động đồng bộ KiotViet mỗi 5 phút ---
-  const { runKiotVietSync } = require("./src/lib/sync-service");
+  // --- Tự động đồng bộ KiotViet theo chu kỳ ---
+  // Lưu ý: sync thực tế dùng Python script (xem triggerSync bên dưới)
   
+
   const startAutoSync = async () => {
     // Tránh chạy trùng lặp khi chạy PM2 Cluster Mode
     if (process.env.NODE_APP_INSTANCE && process.env.NODE_APP_INSTANCE !== "0") {
@@ -40,17 +41,23 @@ app.prepare().then(() => {
       return;
     }
 
-    const { SystemSetting } = require("./src/models/SystemSetting");
-    const { connectDB } = require("./src/lib/mongodb");
+    const mongoose = require("mongoose");
+    const MONGODB_URI = process.env.MONGODB_URI;
+    if (!MONGODB_URI) {
+      console.error("[Server] MONGODB_URI not set, auto-sync disabled.");
+      return;
+    }
 
     console.log("[Server] Initializing auto-sync with dynamic interval...");
-    await connectDB();
+    if (mongoose.connection.readyState === 0) {
+      await mongoose.connect(MONGODB_URI);
+    }
 
     const getInterval = async () => {
       try {
-        const setting = await SystemSetting.findOne({ key: "sync_interval_seconds" });
+        const db = mongoose.connection.db;
+        const setting = await db.collection("systemsettings").findOne({ key: "sync_interval_seconds" });
         const intervalValue = setting?.value || 10;
-        // Áp dụng giới hạn tối thiểu 10 giây để bảo vệ hệ thống
         const safeInterval = Math.max(intervalValue, 10);
         return safeInterval * 1000;
       } catch (err) {

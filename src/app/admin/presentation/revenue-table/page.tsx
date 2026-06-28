@@ -72,7 +72,14 @@ export default function PresentationPage() {
         params.set("arrivalDate", dayjs(parsedSelectedDate).format("YYYY-MM-DD"));
       }
       params.set("presentationMode", "true");
-      const res = await fetch(`/api/revenue?${params}`);
+      params.set("_t", Date.now().toString()); // Tránh cache Next.js/Browser
+      const res = await fetch(`/api/revenue?${params}`, {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache"
+        }
+      });
       const data = await res.json();
       const txs: Transaction[] = (data.transactions || [])
         .sort((a: Transaction, b: Transaction) => {
@@ -89,7 +96,13 @@ export default function PresentationPage() {
   const { socket } = useSocket();
 
   useEffect(() => {
-    fetch("/api/settings/reduction")
+    fetch(`/api/settings/reduction?_t=${Date.now()}`, {
+      cache: "no-store",
+      headers: {
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
+      }
+    })
       .then(res => res.json())
       .then(data => {
         setReductionRules(data);
@@ -97,7 +110,13 @@ export default function PresentationPage() {
       })
       .catch(() => fetchData());
 
-    fetch("/api/settings/presentation")
+    fetch(`/api/settings/presentation?_t=${Date.now()}`, {
+      cache: "no-store",
+      headers: {
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
+      }
+    })
       .then(res => res.json())
       .then(setting => {
         setLayout(setting.layout || "new");
@@ -107,7 +126,13 @@ export default function PresentationPage() {
     if (socket) {
       socket.on("revenue-updated", async () => {
         try {
-          const res = await fetch("/api/settings/presentation");
+          const res = await fetch(`/api/settings/presentation?_t=${Date.now()}`, {
+            cache: "no-store",
+            headers: {
+              "Cache-Control": "no-cache",
+              "Pragma": "no-cache"
+            }
+          });
           const setting = await res.json();
           setLayout(setting.layout || "new");
           if (setting.autoUpdate !== false) {
@@ -118,8 +143,15 @@ export default function PresentationPage() {
         }
       });
     }
+
+    // Thiết lập Polling dự phòng mỗi 30 giây phòng trường hợp mất kết nối Socket
+    const pollInterval = setInterval(() => {
+      fetchData();
+    }, 30000);
+
     return () => {
       if (socket) socket.off("revenue-updated");
+      clearInterval(pollInterval);
     };
   }, [fetchData, socket]);
 
@@ -184,7 +216,7 @@ export default function PresentationPage() {
           flexDirection: "column",
           justifyContent: "space-between",
           padding: "var(--mantine-spacing-xl)",
-          backgroundImage: "url('https://likakaka.com/assets/background-z5ptBPsy.jpeg')",
+          backgroundImage: "url('/background.jpeg')",
           backgroundSize: "cover",
           backgroundPosition: "center center",
           backgroundRepeat: "no-repeat",

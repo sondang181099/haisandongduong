@@ -72,6 +72,7 @@ export async function POST(request: Request) {
       fullname, 
       role, 
       identity, 
+      allowedGroups,
       cars, 
       bankName, 
       bankAccount, 
@@ -99,6 +100,7 @@ export async function POST(request: Request) {
       fullname,
       role: role || "Tài xế",
       identity,
+      allowedGroups: allowedGroups || [],
       cars: (cars || []).map((c: any) => typeof c === "string" ? { licensePlate: c } : c),
       payment: {
         bankBin: bankBin || "",

@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import {
   Box, Button, Group, TextInput, Title, Table, Text, Badge,
   Modal, Stack, Select, PasswordInput, ActionIcon, Tooltip,
-  Card, ScrollArea, Loader, Center, Pagination, Autocomplete,
+  Card, ScrollArea, Loader, Center, Pagination, Autocomplete, MultiSelect,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { notifications } from "@mantine/notifications";
@@ -13,6 +13,7 @@ import {
   IconPlus, IconEdit, IconTrash, IconSearch, IconRefresh, IconCheck,
 } from "@tabler/icons-react";
 import dayjs from "dayjs";
+import "dayjs/locale/vi";
 import { usePagePermission } from "@/hooks/usePagePermission";
 
 interface User {
@@ -21,6 +22,7 @@ interface User {
   fullname: string;
   role: string;
   identity?: string;
+  allowedGroups?: string[];
   cars?: any[];
   detectedCars?: any[];
   payment?: {
@@ -64,6 +66,7 @@ export default function UsersPage() {
     initialValues: {
       username: "", password: "", fullname: "", identity: "",
       role: "Tài xế", 
+      allowedGroups: [] as string[],
       cars: [] as { licensePlate: string, brands: string[] }[], 
       bankName: "", bankAccount: "", bankAccountHolder: "", bankBin: "",
     },
@@ -136,6 +139,7 @@ export default function UsersPage() {
       fullname: user.fullname,
       identity: user.identity || "",
       role: user.role, // Sử dụng mã role trực tiếp
+      allowedGroups: user.allowedGroups || [],
       cars: (user.cars || []).map((c: any) => {
         if (typeof c === 'string') return { licensePlate: c, brands: [] };
         return { 
@@ -292,6 +296,8 @@ export default function UsersPage() {
             value={dateFilter}
             onChange={(val) => { setDateFilter(val); setPage(1); }}
             clearable
+            valueFormat="DD/MM/YYYY"
+            locale="vi"
             style={{ width: "100%", maxWidth: 220 }}
           />
         </Group>
@@ -312,6 +318,7 @@ export default function UsersPage() {
                   <Table.Th>Họ và tên</Table.Th>
                   <Table.Th>Vai trò</Table.Th>
                   <Table.Th>CMND/CCCD</Table.Th>
+                  <Table.Th>Nhóm xe xem được</Table.Th>
                   <Table.Th>Danh sách xe</Table.Th>
                   <Table.Th>Lần đăng nhập gần nhất</Table.Th>
                   <Table.Th>Thao tác</Table.Th>
@@ -320,7 +327,7 @@ export default function UsersPage() {
               <Table.Tbody>
                 {paginatedUsers.length === 0 ? (
                   <Table.Tr>
-                    <Table.Td colSpan={7}>
+                    <Table.Td colSpan={8}>
                       <Center py="xl">
                         <Text c="dimmed">Không tìm thấy dữ liệu</Text>
                       </Center>
@@ -341,6 +348,17 @@ export default function UsersPage() {
                         </Badge>
                       </Table.Td>
                       <Table.Td>{user.identity || "—"}</Table.Td>
+                      <Table.Td>
+                        {user.allowedGroups && user.allowedGroups.length > 0 ? (
+                          <Group gap={4}>
+                            {user.allowedGroups.map(g => (
+                              <Badge key={g} size="xs" variant="outline" color="blue">{g}</Badge>
+                            ))}
+                          </Group>
+                        ) : (
+                          <Text size="xs" c="dimmed" fs="italic">Tất cả</Text>
+                        )}
+                      </Table.Td>
                       <Table.Td>
                         <Stack gap={2}>
                           {user.cars && user.cars.length > 0 && (
@@ -462,7 +480,14 @@ export default function UsersPage() {
                 data={dbRoles.map(r => ({ value: r.key, label: r.name }))}
                 {...form.getInputProps("role")}
               />
-              <Box style={{ flex: 1 }} visibleFrom="sm" />
+              <MultiSelect
+                label="Nhóm xe được xem"
+                placeholder="Để trống để xem tất cả..."
+                data={["Xe ôm", "Nội bộ", "Xe điện", "Taxi", "16 chỗ", "35 chỗ", "45 chỗ", "Khách đoàn", "Khách lẻ."]}
+                clearable
+                searchable
+                {...form.getInputProps("allowedGroups")}
+              />
             </Group>
 
 
