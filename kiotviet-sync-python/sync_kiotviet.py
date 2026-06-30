@@ -127,7 +127,7 @@ def get_access_token():
         "client_secret": CLIENT_SECRET
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    res = http_session.post(url, data=data, headers=headers)
+    res = http_session.post(url, data=data, headers=headers, timeout=30)
     res.raise_for_status()
     return res.json()["access_token"]
 
@@ -139,7 +139,7 @@ def fetch_all_pages(base_url, access_token, page_size=200):
     }
     
     params = {"pageSize": page_size, "currentItem": 0}
-    res = http_session.get(base_url, headers=headers, params=params)
+    res = http_session.get(base_url, headers=headers, params=params, timeout=30)
     res.raise_for_status()
     data_json = res.json()
     
@@ -150,7 +150,7 @@ def fetch_all_pages(base_url, access_token, page_size=200):
         skips = range(page_size, total, page_size)
         def fetch_chunk(skip):
             p = {"pageSize": page_size, "currentItem": skip}
-            r = http_session.get(base_url, headers=headers, params=p)
+            r = http_session.get(base_url, headers=headers, params=p, timeout=30)
             if r.ok:
                 return r.json().get("data", [])
             return []
@@ -188,13 +188,12 @@ def sync_customers(access_token, from_date, is_full_sync=False):
         is_deleted_on_kv = "{DEL}" in raw_name or "{DEL}" in code or "DEL" in code or "DEL" in raw_name
         
         if is_deleted_on_kv:
-            clean_code = strip_del_suffix(code)
             customers_orig_col.update_many(
-                {"$or": [{"customerId": c.get("id")}, {"code": {"$regex": f"^{re.escape(clean_code)}$", "$options": "i"}}]},
+                {"customerId": c.get("id")},
                 {"$set": {"isDeleted": True, "updatedAt": datetime.now(pytz.utc)}}
             )
             customers_col.update_many(
-                {"$or": [{"customerId": c.get("id")}, {"code": {"$regex": f"^{re.escape(clean_code)}$", "$options": "i"}}]},
+                {"customerId": c.get("id")},
                 {"$set": {"isDeleted": True, "updatedAt": datetime.now(pytz.utc)}}
             )
             processed_count += 1
@@ -356,11 +355,11 @@ def check_deleted_todays_customers(access_token, live_customer_ids, today_start_
 
             if is_deleted_on_kv:
                 customers_col.update_many(
-                    {"$or": [{"customerId": cid}, {"code": {"$regex": f"^{re.escape(code)}$", "$options": "i"}}]},
+                    {"customerId": cid},
                     {"$set": {"isDeleted": True, "updatedAt": datetime.now(pytz.utc)}}
                 )
                 customers_orig_col.update_many(
-                    {"$or": [{"customerId": cid}, {"code": {"$regex": f"^{re.escape(code)}$", "$options": "i"}}]},
+                    {"customerId": cid},
                     {"$set": {"isDeleted": True, "updatedAt": datetime.now(pytz.utc)}}
                 )
                 deleted_count += 1
@@ -454,11 +453,11 @@ def sync_raw_invoices_to_db(invoices):
             info = customer_info[code_item]
             if info.get("isDeleted"):
                 customers_orig_col.update_many(
-                    {"$or": [{"customerId": info["customerId"]}, {"code": {"$regex": f"^{re.escape(code_item)}$", "$options": "i"}}]},
+                    {"customerId": info["customerId"]},
                     {"$set": {"isDeleted": True, "updatedAt": datetime.now(pytz.utc)}}
                 )
                 customers_col.update_many(
-                    {"$or": [{"customerId": info["customerId"]}, {"code": {"$regex": f"^{re.escape(code_item)}$", "$options": "i"}}]},
+                    {"customerId": info["customerId"]},
                     {"$set": {"isDeleted": True, "updatedAt": datetime.now(pytz.utc)}}
                 )
         

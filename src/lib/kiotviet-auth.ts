@@ -32,7 +32,7 @@ export async function refreshKiotVietToken(): Promise<string | null> {
     params.append("client_id", clientId);
     params.append("client_secret", clientSecret);
     params.append("grant_type", "client_credentials");
-    params.append("scope", "PublicApi.Access");
+    params.append("scopes", "PublicApi.Read PublicApi.Write");
 
     const response = await fetch("https://id.kiotviet.vn/connect/token", {
       method: "POST",

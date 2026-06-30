@@ -1580,32 +1580,44 @@ export function RevenueView({ title }: RevenueViewProps) {
                               </Table.Td>
                             </Table.Tr>
                           ) : invoiceDetails.length > 0 ? (
-                            invoiceDetails.map((inv, idx) => (
-                              <Table.Tr key={inv.code || idx}>
-                                <Table.Td style={{ whiteSpace: "nowrap" }}>
-                                  <Group gap={6} wrap="nowrap">
-                                    <IconFileSpreadsheet size={16} color="#4dabf7" style={{ flexShrink: 0 }} />
-                                    <Text size="sm" fw={600} c="blue.6" style={{ cursor: "pointer", textDecoration: "underline" }} onClick={() => setSelectedInvoice(inv)}>
-                                      {inv.code}{infoTx.status === 1 && infoTx.paidDateAt && dayjs(inv.purchaseDate).isAfter(dayjs(infoTx.paidDateAt)) ? "-s" : ""}
+                            invoiceDetails.map((inv, idx) => {
+                              const isCancelled = Number(inv.status) === 2;
+                              return (
+                                <Table.Tr key={inv.code || idx} style={{ backgroundColor: isCancelled ? "#fff5f5" : undefined }}>
+                                  <Table.Td style={{ whiteSpace: "nowrap" }}>
+                                    <Group gap={6} wrap="nowrap">
+                                      <IconFileSpreadsheet size={16} color={isCancelled ? "#fa5252" : "#4dabf7"} style={{ flexShrink: 0 }} />
+                                      <Text size="sm" fw={600} c={isCancelled ? "red.6" : "blue.6"} style={{ cursor: "pointer", textDecoration: isCancelled ? "line-through" : "underline" }} onClick={() => setSelectedInvoice(inv)}>
+                                        {inv.code}{infoTx.status === 1 && infoTx.paidDateAt && dayjs(inv.purchaseDate).isAfter(dayjs(infoTx.paidDateAt)) ? "-s" : ""}
+                                      </Text>
+                                      {isCancelled && <Badge color="red" variant="filled" size="xs" radius="sm">Hủy</Badge>}
+                                    </Group>
+                                  </Table.Td>
+                                  <Table.Td style={{ whiteSpace: "nowrap" }}>
+                                    <Text size="sm" fw={500} c="gray.7" style={{ textDecoration: isCancelled ? "line-through" : undefined }}>
+                                      {dayjs(inv.purchaseDate).format("HH:mm:ss")}
                                     </Text>
-                                  </Group>
-                                </Table.Td>
-                                <Table.Td style={{ whiteSpace: "nowrap" }}><Text size="sm" fw={500} c="gray.7">{dayjs(inv.purchaseDate).format("HH:mm:ss")}</Text></Table.Td>
-                                <Table.Td style={{ whiteSpace: "nowrap" }}><Text size="sm" c="gray.8" fw={500}>{inv.soldByName || "—"}</Text></Table.Td>
-                                <Table.Td>
-                                  <Tooltip label={inv.mainProducts || "—"} multiline w={300} withArrow>
-                                    <Text size="sm" c="gray.7" style={{ maxWidth: 250, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help" }}>
-                                      {inv.mainProducts || "—"}
+                                  </Table.Td>
+                                  <Table.Td style={{ whiteSpace: "nowrap" }}>
+                                    <Text size="sm" c="gray.8" fw={500} style={{ textDecoration: isCancelled ? "line-through" : undefined }}>
+                                      {inv.soldByName || "—"}
                                     </Text>
-                                  </Tooltip>
-                                </Table.Td>
-                                <Table.Td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                                  <Text fw={700} size="sm" color="gray.9" style={{ fontVariantNumeric: "tabular-nums" }}>
-                                    <NumberFormatter value={inv.total} thousandSeparator="." decimalSeparator="," />
-                                  </Text>
-                                </Table.Td>
-                              </Table.Tr>
-                            ))
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Tooltip label={inv.mainProducts || "—"} multiline w={300} withArrow>
+                                      <Text size="sm" c="gray.7" style={{ maxWidth: 250, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "help", textDecoration: isCancelled ? "line-through" : undefined }}>
+                                        {inv.mainProducts || "—"}
+                                      </Text>
+                                    </Tooltip>
+                                  </Table.Td>
+                                  <Table.Td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                                    <Text fw={700} size="sm" color={isCancelled ? "red.6" : "gray.9"} style={{ fontVariantNumeric: "tabular-nums", textDecoration: isCancelled ? "line-through" : undefined }}>
+                                      <NumberFormatter value={inv.total} thousandSeparator="." decimalSeparator="," />
+                                    </Text>
+                                  </Table.Td>
+                                </Table.Tr>
+                              );
+                            })
                           ) : (
                             <Table.Tr>
                               <Table.Td colSpan={5}>
@@ -1623,17 +1635,26 @@ export function RevenueView({ title }: RevenueViewProps) {
                   {/* Summary Footer */}
                   {!loadingDetails && invoiceDetails.length > 0 && (
                     <Card withBorder radius="lg" p="md" bg="gray.0" shadow="xs">
-                      <Group justify="flex-end" gap="xl">
-                        <Text size="sm" fw={500} c="dimmed">
-                          Tổng cộng ({invoiceDetails.length} hiển thị):
-                        </Text>
-                        <Text size="lg" fw={800} c="blue.7">
-                          <NumberFormatter 
-                            value={invoiceDetails.reduce((acc, curr) => acc + curr.total, 0)} 
-                            thousandSeparator="." 
-                            decimalSeparator="," 
-                          /> đ
-                        </Text>
+                      <Group justify="space-between" align="center">
+                        <Group gap="xs">
+                          {invoiceDetails.some(inv => Number(inv.status) === 2) && (
+                            <Text size="xs" c="red.6" fw={600}>
+                              * Chú ý: Có hóa đơn đã hủy (không tính vào doanh thu đoàn)
+                            </Text>
+                          )}
+                        </Group>
+                        <Group gap="xl">
+                          <Text size="sm" fw={500} c="dimmed">
+                            Tổng cộng ({invoiceDetails.filter(inv => Number(inv.status) !== 2).length} hóa đơn hiệu lực):
+                          </Text>
+                          <Text size="lg" fw={800} c="blue.7">
+                            <NumberFormatter 
+                              value={invoiceDetails.filter(inv => Number(inv.status) !== 2).reduce((acc, curr) => acc + curr.total, 0)} 
+                              thousandSeparator="." 
+                              decimalSeparator="," 
+                            /> đ
+                          </Text>
+                        </Group>
                       </Group>
                     </Card>
                   )}

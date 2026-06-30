@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { runKiotVietSync } from "@/lib/sync-service";
+import { emitRevenueUpdate } from "@/lib/socket-server";
 
 export async function POST(request: Request) {
   try {
@@ -29,7 +30,6 @@ export async function POST(request: Request) {
       const unitsMatch = stdout.match(/Groups updated: (\d+)/);
       
       // Phát tín hiệu cập nhật qua WebSocket bằng helper đã cài debounce
-      const { emitRevenueUpdate } = require("@/lib/socket-server");
       emitRevenueUpdate();
 
 

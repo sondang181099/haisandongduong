@@ -38,7 +38,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       const escapedCode = code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const dbCustomer = await Customer.findOne({
         code: { $regex: `^${escapedCode}$`, $options: "i" }
-      });
+      }).sort({ createdAt: -1 });
       
       const startOfDay = dayjs.tz(dateKey, "Asia/Ho_Chi_Minh").startOf("day").toDate();
       const endOfDay = dayjs.tz(dateKey, "Asia/Ho_Chi_Minh").endOf("day").toDate();

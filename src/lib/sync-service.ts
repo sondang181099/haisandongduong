@@ -81,8 +81,31 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
 
   // Bước 0: Lấy nhanh thông tin nhóm của các mã khách hàng trong danh sách hóa đơn
   const codes = Array.from(new Set(invoices.map(inv => inv.customerCode ? inv.customerCode.split("{")[0].trim() : "").filter(Boolean)));
+  const customerIds = Array.from(new Set(invoices.map(inv => inv.customerId).filter(Boolean)));
   const codeToGroups: Record<string, string> = {};
   if (codes.length > 0) {
+    try {
+      const { Customer } = await import("../models/Customer");
+      const queryCond: any = {};
+      if (customerIds.length > 0) {
+        queryCond.$or = [
+          { customerId: { $in: customerIds } },
+          { code: { $in: codes }, isDeleted: { $ne: true } }
+        ];
+      } else {
+        queryCond.code = { $in: codes };
+        queryCond.isDeleted = { $ne: true };
+      }
+      const customerRecords = await Customer.find(queryCond).sort({ createdAt: 1 }).lean();
+      for (const c of customerRecords) {
+        if (c.code) {
+          codeToGroups[c.code.split("{")[0].trim()] = c.groups || "";
+        }
+      }
+    } catch (e) {
+      console.error("Error loading groups from Customer collection:", e);
+    }
+
     const records = await Transaction.find(
       { code: { $in: codes } },
       { code: 1, groups: 1, updatedAt: 1 }
@@ -216,12 +239,20 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
           
           // Tra cứu thông tin từ bảng customers nội bộ trước (nơi đã được nạp tĩnh từ Excel)
           const { Customer } = await import("../models/Customer");
-          const localCust = await Customer.findOne({
-            code: { $regex: `^${escapeRegExp(cleanCode)}$`, $options: "i" }
-          }).lean();
+          let localCust = null;
+          if (customerId) {
+            localCust = await Customer.findOne({
+              customerId: customerId
+            }).sort({ createdAt: -1 }).lean();
+          }
+          if (!localCust) {
+            localCust = await Customer.findOne({
+              code: { $regex: `^${escapeRegExp(cleanCode)}$`, $options: "i" },
+              isDeleted: { $ne: true }
+            }).sort({ createdAt: -1 }).lean();
+          }
 
           if (localCust) {
-            licensePlate = localCust.name || licensePlate;
             customerGroups = localCust.groups || customerGroups;
             customerId = localCust.customerId || customerId;
             isCustomerDeleted = localCust.isDeleted || false;
@@ -231,7 +262,6 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
             }).sort({ updatedAt: -1 }).lean();
             
             if (localRecord && localRecord.groups && !localRecord.isCustomerDeleted) {
-              licensePlate = localRecord.licensePlate || licensePlate;
               customerGroups = localRecord.groups || customerGroups;
               customerId = localRecord.customerId || customerId;
               isCustomerDeleted = false;
@@ -250,8 +280,10 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
                 const customer = custData.data?.find((c: any) => c.code === cleanCode) || custData.data?.[0];
                 
                 if (customer) {
-                  const bestName = customer.licensePlate || (customer.name && !customer.name.includes("{DEL}") ? customer.name : null);
-                  if (bestName) licensePlate = bestName;
+                  if (!licensePlate || licensePlate === "Khách lẻ." || licensePlate === "Khách lẻ" || licensePlate === group.customerCode) {
+                    const bestName = customer.licensePlate || (customer.name && !customer.name.includes("{DEL}") ? customer.name : null);
+                    if (bestName) licensePlate = bestName;
+                  }
                   if (customer.groups) customerGroups = customer.groups;
                   customerId = customer.id || customerId;
                   if (customer.name?.includes("{DEL}")) isCustomerDeleted = true;
@@ -291,14 +323,14 @@ export async function processInvoicesToTransactions(invoices: any[], accessToken
       const isRetailLogic = isVehicleReset && isActuallyRetail;
 
       let existingTx = null;
-      if (isRetailLogic) {
+      if (isRetailLogic && group.invoiceCodes.length > 0) {
         // Khách vãng lai: match chính xác theo invoiceCode từng cái riêng
         existingTx = await Transaction.findOne({
           code: { $regex: `^${escapeRegExp(group.customerCode)}$`, $options: "i" },
           arrivalDate: { $gte: startOfDay, $lte: endOfDay },
           invoiceCode: { $regex: `\\b${escapeRegExp(group.invoiceCodes[0])}\\b` }
         }).lean();
-      } else {
+      } else if (!isRetailLogic) {
         // Trường hợp Xe đoàn: tìm tất cả transaction cùng mã đoàn, cùng ngày, chưa thanh toán (status = 0)
         const potentialTxs = await Transaction.find({
           code: { $regex: `^${escapeRegExp(group.customerCode)}$`, $options: "i" },
@@ -684,6 +716,7 @@ export async function getInvoicesByCustomerCode(code: string) {
         soldByName: inv.soldByName || "Hệ thống",
         total: inv.total || 0,
         mainProducts: productNames,
+        status: inv.status,
         details: (inv.invoiceDetails || []).map((d: any) => ({
           productCode: d.productCode,
           productName: d.productName,

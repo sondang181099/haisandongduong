@@ -335,6 +335,7 @@ export async function GET(request: Request) {
       if (presentationMode) {
         postQuery.groups = { $nin: INTERNAL_GROUPS };
         postQuery.isHidden = { $ne: true };
+        postQuery.isCustomerDeleted = { $ne: true };
       } else if (groups) {
         const types = groups.split(",");
         postQuery.groups = { $in: types };
@@ -568,9 +569,11 @@ export async function GET(request: Request) {
 
         if (!dbCustomer) {
           const db = mongoose.connection.db;
-          dbCustomer = await db.collection("customers_original").findOne({
-            code: { $regex: `^${escapedSearch}$`, $options: "i" }
-          });
+          dbCustomer = await db.collection("customers_original")
+            .find({ code: { $regex: `^${escapedSearch}$`, $options: "i" } })
+            .sort({ createdAt: -1 })
+            .limit(1)
+            .next();
         }
 
         if (dbCustomer) {
@@ -590,8 +593,8 @@ export async function GET(request: Request) {
 
           const isHidden = !!isHiddenToday;
 
-          // Nếu ở chế độ trình chiếu (presentationMode = true) và bị ẩn thì bỏ qua hẳn
-          if (presentationMode && isHidden) {
+          // Nếu ở chế độ trình chiếu (presentationMode = true) và bị ẩn hoặc khách hàng bị xóa thì bỏ qua hẳn
+          if (presentationMode && (isHidden || dbCustomer.isDeleted)) {
             // Không chèn
           } else if (!allowedGroups || allowedGroups.length === 0 || allowedGroups.includes(groupValue)) {
             const virtualTx = {

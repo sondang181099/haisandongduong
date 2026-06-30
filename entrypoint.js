@@ -78,7 +78,7 @@ app.prepare().then(() => {
             const pythonScript = path.join(projectDir, "kiotviet-sync-python", "sync_kiotviet.py");
             const { emitRevenueUpdate } = require("./socket-server");
             
-            exec(`python3 "${pythonScript}" auto`, (error, stdout, stderr) => {
+            exec(`python3 "${pythonScript}" auto`, { timeout: 180000 }, (error, stdout, stderr) => {
               if (error) {
                 console.error(`[Server] Python sync error: ${error.message}`);
               } else {
